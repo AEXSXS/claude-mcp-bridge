@@ -89,7 +89,7 @@
 ### [2026-09-27 21:00] 🟢已完成：第一阶段 —— 骨架搭建（Firefox 版）
 **目标**：按协调者两条指令（20:48 + 20:51 修正为 Firefox）搭建 MCP Server 与浏览器扩展最小骨架，不实现真实业务逻辑。
 
-**本地项目路径确认**：`D:\kk三部曲\155.claude-mcp-bridge`
+**本地项目路径确认**：`D:\\kk三部曲\\155.claude-mcp-bridge`
 
 **已做的事**：
 - 新建 `mcp_server/`：
@@ -105,7 +105,7 @@
 - MCP Server **实测通过**：用 mcp 客户端走 stdio 完成 initialize + call_tool('hello')，返回 `hello, bridge!`（全链路实测，非静态检查）
 - `manifest.json` JSON 语法校验通过
 - Firefox 实际加载（about:debugging）未验证——本机执行环境无法操作浏览器 GUI，需协调者或用户手动加载验证 content script 注入
-- 环境备注：venv 位于 `C:\Users\hp\.workbuddy\binaries\python\envs\bridge`（跑 server 用它）；pip 装 tuna 镜像异常（from versions: none），换 aliyun 镜像成功，供后续排障参考
+- 环境备注：venv 位于 `C:\\Users\\hp\\.workbuddy\\binaries\\python\\envs\\bridge`（跑 server 用它）；pip 装 tuna 镜像异常（from versions: none），换 aliyun 镜像成功，供后续排障参考
 
 **下一步打算**（等协调者指示）：
 - 第二阶段候选：扩展 ↔ Server 的 WebSocket 连接（8765）；Claude.ai 页面 DOM 交互（发送消息）；回复抓取
@@ -115,3 +115,27 @@
 - Firefox MV3 的 background 暂用 `scripts`（event page）；若后续要 Chrome 兼容需加 `service_worker` 字段，结构上已预留
 - 本 commit：见 git log（骨架文件 + 本日志同 commit 提交）
 ---
+
+### [2026-09-27 21:06] 【协调者验收】
+- 针对：第一阶段骨架（21:00 🟢记录）
+- 决策/指示：
+  **验收结论：通过（带备注）**
+
+  已用工具实际核对仓库内容：
+  - 目录结构正确：`mcp_server/` + `extension/` 齐全
+  - `mcp_server/server.py`：仅 hello 工具 + stdio，无真实业务逻辑 ✓
+  - `mcp_server/requirements.txt`：`mcp>=2.0.0` ✓
+  - `extension/manifest.json`：MV3 + gecko id + strict_min_version 109.0 + background.scripts + content_scripts 匹配 claude.ai ✓
+  - `background.js` / `content.js`：仅 console.log，无发送/WS 逻辑 ✓
+  - 本地路径已记录：`D:\\kk三部曲\\155.claude-mcp-bridge`
+
+  **备注 / 风险提示**：
+  1. `from mcp.server.mcpserver import MCPServer` 这条导入路径依赖执行者声称的 mcp 2.x 更名。后续若官方包仍使用 FastMCP 或其他路径，需修正。当前阶段可接受。
+  2. Firefox 真机加载（about:debugging）尚未由执行者验证——请用户或协调者侧有条件时手动确认 content script 是否成功注入。
+  3. 无越权改动，遵守了「不实现真实发送/WS」的边界。
+
+  **当前不立即下发第二阶段任务**。请执行者先确认：
+  - 是否方便在本机 Firefox 临时加载扩展并验证 content script 注入（看控制台是否有 `[claude-mcp-bridge] content script injected`）？
+  - 若已验证，请补充 🟢 记录；若暂时无法验证，也可直接说明，协调者再决定是否推进 WebSocket 连接阶段。
+
+- 备注：等待执行者对 Firefox 加载验证的反馈后再开下一阶段。
