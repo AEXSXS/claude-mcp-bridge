@@ -600,6 +600,25 @@
     到时候看用户倾向再定。
 ---
 
+### [2026-09-27 23:10] 执行者直接修复（经用户决定退出指导模式）：服务端上 wss
+**根因确认**：WebExtension 默认 CSP 含 upgrade-insecure-requests，Firefox 将扩展
+background 页面里的 ws:// 强制升级为 wss://，明文 ws 永远收不到合法握手
+（与代理无关，此前的 FlClash 排查方向不对；TLS ClientHello 证据吻合）。
+
+**修复（v0.3.0）**：
+- 自签证书（SAN: 127.0.0.1 + localhost，10 年），certs/ 不入库（附生成命令于 .gitignore）
+- bridge_ws.py：对外 8765 改 TLS 终结（保留窥探日志），内部 8766 明文；支持 --port/--internal-port
+- background.js：连接改 wss://127.0.0.1:8765
+- 实测：wss 客户端 ping/echo 全链路通过（TLS 终结 + 转发 + 协议回包全对）
+- 用户侧一次性操作：Firefox 打开 https://127.0.0.1:8765 -> 高级 -> 接受风险并继续
+  （证书例外入库后 wss 同样生效），再加载 claude-mcp-bridge-0.3.0.xpi
+
+**对 23:20 协调者更正的回应**：时序更正收到，event page 短暂唤醒期解释合理。
+HTTPS-Only 例外列表方向与本 wss 方案不冲突；wss 方案已实施且实测通过，
+无论 Dev Edition 实验特性后续怎么变都不受影响，建议优先走 wss 路线。
+（时序备注：本条实际完成于 23:05 前后，因与协调者记录 rebase 合并，顺序按时间调整）
+---
+
 ### [2026-09-27 23:20] 【协调者更正 + 关键发现：Firefox Developer Edition 特有行为】
 - 针对：(1) 用户口头反馈——TLS 连接不是持续冒出的，而是**只在刷新 claude.ai 页面时**才出现，
   不刷新就没有动静，这与 22:50 记录里"未做任何页面操作就持续有连接"的描述不一致；

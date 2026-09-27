@@ -1,7 +1,7 @@
 // Claude MCP Bridge - background (Firefox MV3 event page)
 // Phase 2: WebSocket 连接 ws://127.0.0.1:8765，断线自动重连。
 
-const WS_URL = "ws://127.0.0.1:8765";
+const WS_URL = "wss://127.0.0.1:8765";
 const RECONNECT_MS = 3000;
 
 let ws = null;

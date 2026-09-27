@@ -1,50 +1,67 @@
-"""claude-mcp-bridge WebSocket bridge (Phase 2 + 诊断层)
+"""claude-mcp-bridge WebSocket bridge (Phase 2, wss)
 
-对外监听 ws://127.0.0.1:8765（扩展连接此端口）。
-对外端口前面加了一层"字节窥探中继"（诊断用）：
-  - 打印每个新连接的 remote_address
-  - 握手前抓取对端发来的第一段原始字节（含 0 字节情形）并打印 repr
-  - 字节原样转发给内部 websockets 服务（127.0.0.1:8766），不影响正常握手
-目的：排查 "opening handshake failed / did not receive a valid HTTP request"，
-看清对端到底发来了什么（空字节 / TLS ClientHello / HTTP CONNECT / 乱码）。
+为什么是 wss：WebExtension 默认 CSP 含 upgrade-insecure-requests，Firefox/Chrome
+会把扩展 background 页面里的 ws:// 强制升级为 wss://，明文 ws 永远收不到合法握手。
+所以对外端口直接做 TLS 终结（自签证书，SAN: 127.0.0.1 / localhost）。
 
-协议（JSON text frame，由内部 websockets 服务处理）：
+架构：
+  扩展 --wss://127.0.0.1:8765--> [TLS 中继(窥探日志)] --ws--> 127.0.0.1:8766 [websockets]
+
+首次使用需在 Firefox 给证书加例外：浏览器打开 https://127.0.0.1:8765
+-> 高级 -> 接受风险并继续（例外入库后 wss 连接同样生效）。
+
+协议（JSON text frame）：
   {"type": "ping"}                -> {"type": "pong"}
   {"type": "echo", "text": "..."} -> {"type": "echo_reply", "text": "..."}
   其他                            -> {"type": "error", "error": "..."}
 
 MCP stdio 入口见 server.py，两者为独立进程。
-启动：python bridge_ws.py
+启动：python bridge_ws.py [--port 8765] [--internal-port 8766]
 """
 
+import argparse
 import asyncio
 import json
 import logging
+import ssl
+from pathlib import Path
 
 import websockets
 
-PUBLIC_HOST, PUBLIC_PORT = "127.0.0.1", 8765   # 对外：扩展连这里（诊断中继）
-INTERNAL_HOST, INTERNAL_PORT = "127.0.0.1", 8766  # 对内：websockets 真正监听
 SNIFF_TIMEOUT = 1.0   # 等第一段字节的秒数
 SNIFF_SIZE = 512      # 抓取字节数上限
+CERT_DIR = Path(__file__).parent / "certs"
 
 
-async def relay(client_reader: asyncio.StreamReader, client_writer: asyncio.StreamWriter) -> None:
+def build_ssl_context() -> ssl.SSLContext:
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.load_cert_chain(CERT_DIR / "server.crt", CERT_DIR / "server.key")
+    return ctx
+
+
+async def relay(
+    client_reader: asyncio.StreamReader,
+    client_writer: asyncio.StreamWriter,
+    internal_port: int,
+) -> None:
     peer = client_writer.get_extra_info("peername")
-    print(f"[diag] new connection from {peer}", flush=True)
+    print(f"[diag] new TLS connection from {peer}", flush=True)
 
     try:
         head = await asyncio.wait_for(client_reader.read(SNIFF_SIZE), timeout=SNIFF_TIMEOUT)
     except asyncio.TimeoutError:
         head = b""
-    except ConnectionError as e:
+    except (ConnectionError, OSError, ssl.SSLError) as e:
         print(f"[diag] {peer} read failed before sniff: {e!r}", flush=True)
         client_writer.close()
         return
-    print(f"[diag] {peer} first {len(head)} byte(s): {head[:200]!r}", flush=True)
+    if head:
+        print(f"[diag] {peer} first {len(head)} byte(s): {head[:200]!r}", flush=True)
+    else:
+        print(f"[diag] {peer} sent 0 byte(s) within {SNIFF_TIMEOUT}s", flush=True)
 
     try:
-        up_reader, up_writer = await asyncio.open_connection(INTERNAL_HOST, INTERNAL_PORT)
+        up_reader, up_writer = await asyncio.open_connection("127.0.0.1", internal_port)
     except OSError as e:
         print(f"[diag] {peer} upstream connect failed: {e!r}", flush=True)
         client_writer.close()
@@ -110,17 +127,20 @@ async def ws_handler(ws) -> None:
         print(f"[bridge-ws] client removed: {peer}", flush=True)
 
 
-async def main() -> None:
+async def main(port: int, internal_port: int) -> None:
     logging.basicConfig(level=logging.INFO, format="[ws-lib] %(name)s %(levelname)s %(message)s")
+    ssl_ctx = build_ssl_context()
 
     async def serve_ws() -> None:
-        async with websockets.serve(ws_handler, INTERNAL_HOST, INTERNAL_PORT):
-            print(f"[bridge-ws] internal ws listening on {INTERNAL_HOST}:{INTERNAL_PORT}", flush=True)
+        async with websockets.serve(ws_handler, "127.0.0.1", internal_port):
+            print(f"[bridge-ws] internal ws listening on 127.0.0.1:{internal_port}", flush=True)
             await asyncio.Future()
 
     async def serve_relay() -> None:
-        server = await asyncio.start_server(relay, PUBLIC_HOST, PUBLIC_PORT)
-        print(f"[diag] public relay listening on {PUBLIC_HOST}:{PUBLIC_PORT} (sniff {SNIFF_SIZE}B/{SNIFF_TIMEOUT}s)", flush=True)
+        server = await asyncio.start_server(
+            lambda r, w: relay(r, w, internal_port), "127.0.0.1", port, ssl=ssl_ctx
+        )
+        print(f"[diag] public wss relay listening on wss://127.0.0.1:{port} (sniff {SNIFF_SIZE}B/{SNIFF_TIMEOUT}s)", flush=True)
         async with server:
             await asyncio.Future()
 
@@ -128,4 +148,8 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--port", type=int, default=8765)
+    ap.add_argument("--internal-port", type=int, default=8766)
+    args = ap.parse_args()
+    asyncio.run(main(args.port, args.internal_port))
