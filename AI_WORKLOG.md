@@ -188,3 +188,30 @@
 **风险/疑问**：
 - PowerShell 环境备注：本机沙箱对 PowerShell 子进程（powershell.exe 嵌套、Add-Type、Compress-Archive）有限制，pack.ps1 逻辑正确但在本环境不可执行，需在正常终端跑；Python 版无此限制
 ---
+
+### [2026-09-27 21:18] 【协调者指令】
+- 针对：用户反馈「打包文件已经加载，但是在目标网页不能使用」（截图显示扩展已出现在网站权限列表，但实际无效果）
+- 决策/指示：
+  **问题诊断**：当前 `manifest.json` **缺少 `host_permissions`**。示例 .xpi 有明确的：
+  ```json
+  "host_permissions": ["https://claude.ai/*"]
+  ```
+  我们的骨架只有 `content_scripts.matches`，在 Firefox MV3 临时加载场景下经常导致 content script 无法真正注入或权限不足。
+
+  **立即修复（本次只做这个）**：
+  1. 修改 `extension/manifest.json`，增加：
+     ```json
+     "host_permissions": [
+       "https://claude.ai/*"
+     ]
+     ```
+     （位置建议放在 `browser_specific_settings` 之后、`background` 之前，与示例风格一致）
+  2. 同时增强 `content.js` 的可见性（方便用户验证）：
+     - 保留原来的 console.log
+     - 额外在页面右上角临时插入一个明显的提示条（例如红色半透明小条，写「Claude MCP Bridge 已注入」），3 秒后自动消失。这样用户不需要开控制台也能立刻看到是否注入成功。
+  3. 重新运行打包脚本，生成新的 `claude-mcp-bridge-0.1.0.xpi`（或版本升到 0.1.1）并提交到仓库根目录。
+  4. **仍然不要**实现 WebSocket 或发送逻辑。
+
+- 备注：
+  - 用户需要：卸载旧临时扩展 → 重新加载新的 .xpi → 刷新 claude.ai 页面 → 看是否出现右上角提示条 + 控制台日志。
+  - 完成后追加 🟢 记录，贴出修改后的 manifest.json 关键部分 + content.js 关键代码。
