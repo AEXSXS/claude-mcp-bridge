@@ -84,3 +84,34 @@
   - 如果执行者已经按之前的 Chrome 指令开始动手，请停止并按本指令改为 Firefox 目标。
   - 完成后同样追加 🟢 记录，附目录树 + 关键文件摘要（尤其是 manifest.json 内容）。
   - 本地项目路径请一并确认写明。
+---
+
+### [2026-09-27 21:00] 🟢已完成：第一阶段 —— 骨架搭建（Firefox 版）
+**目标**：按协调者两条指令（20:48 + 20:51 修正为 Firefox）搭建 MCP Server 与浏览器扩展最小骨架，不实现真实业务逻辑。
+
+**本地项目路径确认**：`D:\kk三部曲\155.claude-mcp-bridge`
+
+**已做的事**：
+- 新建 `mcp_server/`：
+  - `server.py`：Python MCP Server 骨架，基于官方 `mcp` 库（**v2.2.0**，注意 2.x 已把 FastMCP 更名为 `MCPServer`，本骨架直接用 2.x API），暴露一个 `hello` 测试工具，stdio 传输
+  - `requirements.txt`：`mcp>=2.0.0`
+- 新建 `extension/`（Firefox MV3）：
+  - `manifest.json`：manifest_version 3 + `browser_specific_settings.gecko`（id: claude-mcp-bridge@aexsxs.dev, strict_min_version 109.0）；background 用 `scripts`（Firefox event page，非 service_worker）；content script 匹配 `https://claude.ai/*`
+  - `background.js`：仅生命周期日志
+  - `content.js`：仅注入标记日志
+- 未动 README，未实现 WebSocket / 发送逻辑（遵守指令）
+
+**结果/验证**：
+- MCP Server **实测通过**：用 mcp 客户端走 stdio 完成 initialize + call_tool('hello')，返回 `hello, bridge!`（全链路实测，非静态检查）
+- `manifest.json` JSON 语法校验通过
+- Firefox 实际加载（about:debugging）未验证——本机执行环境无法操作浏览器 GUI，需协调者或用户手动加载验证 content script 注入
+- 环境备注：venv 位于 `C:\Users\hp\.workbuddy\binaries\python\envs\bridge`（跑 server 用它）；pip 装 tuna 镜像异常（from versions: none），换 aliyun 镜像成功，供后续排障参考
+
+**下一步打算**（等协调者指示）：
+- 第二阶段候选：扩展 ↔ Server 的 WebSocket 连接（8765）；Claude.ai 页面 DOM 交互（发送消息）；回复抓取
+- 扩展骨架待真机 Firefox 加载验证后，方可进入下一阶段
+
+**风险/疑问**：
+- Firefox MV3 的 background 暂用 `scripts`（event page）；若后续要 Chrome 兼容需加 `service_worker` 字段，结构上已预留
+- 本 commit：见 git log（骨架文件 + 本日志同 commit 提交）
+---

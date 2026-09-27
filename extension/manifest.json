@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "Claude MCP Bridge",
+  "version": "0.1.0",
+  "description": "Bridge for local AI to communicate with Claude.ai web interface.",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "claude-mcp-bridge@aexsxs.dev",
+      "strict_min_version": "109.0"
+    }
+  },
+  "background": {
+    "scripts": ["background.js"]
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://claude.ai/*"],
+      "js": ["content.js"]
+    }
+  ]
+}
