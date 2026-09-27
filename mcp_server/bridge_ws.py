@@ -18,6 +18,12 @@
       -> 广播给所有连接（扩展收到后转发 claude.ai 标签页执行）
   {"type": "page_result", "id": "...", "ok": true, "data": {...}}
       -> 匹配 pending 的 page_cmd，完成一次请求-响应往返
+  {"type": "reply_event", "id": "...", "ok": true, "text": "...", "truncated": false}
+      -> v0.6.0: 扩展 watcher/missed 兜底推送的回复事件，存入 mailbox（TTL 10min）
+  {"type": "wait_reply", "id": "...", "timeout": 300}
+      -> v0.6.0: 轮询 mailbox 等回复（1s 步进），到手/超时回 reply_result
+  {"type": "mailbox_get", "id": "..."}
+      -> v0.6.0: 立即查 mailbox（迟到取件），回 reply_result（found 标记）
   其他                            -> {"type": "error", "error": "..."}
 
 启动：python bridge_ws.py [--port 8765] [--internal-port 8766]
@@ -36,6 +42,7 @@ import websockets
 SNIFF_TIMEOUT = 1.0   # 等第一段字节的秒数
 SNIFF_SIZE = 512      # 抓取字节数上限
 CERT_DIR = Path(__file__).parent / "certs"
+MAILBOX_TTL = 600.0   # reply_event 条目存活秒数，写入时顺手清理过期项
 
 
 def build_ssl_context() -> ssl.SSLContext:
@@ -45,11 +52,12 @@ def build_ssl_context() -> ssl.SSLContext:
 
 
 class Hub:
-    """连接注册表 + page_cmd 请求-响应匹配。"""
+    """连接注册表 + page_cmd 请求-响应匹配 + reply mailbox（v0.6.0）。"""
 
     def __init__(self) -> None:
         self.clients: set = set()
         self.pending: dict = {}  # id -> asyncio.Future
+        self.mailbox: dict = {}  # id -> {"ts", "ok", "text", "truncated", "error"}
 
     async def broadcast(self, text: str) -> None:
         for c in list(self.clients):
@@ -57,6 +65,28 @@ class Hub:
                 await c.send(text)
             except websockets.ConnectionClosed:
                 pass
+
+    def mail_put(self, msg: dict) -> None:
+        """存 reply_event，写入时顺带清理过期条目（不设后台清理协程）。"""
+        now = asyncio.get_running_loop().time()
+        for k in [k for k, v in self.mailbox.items() if now - v["ts"] > MAILBOX_TTL]:
+            self.mailbox.pop(k, None)
+            print(f"[bridge-ws] mailbox expired: {k}", flush=True)
+        self.mailbox[msg["id"]] = {
+            "ts": now,
+            "ok": bool(msg.get("ok")),
+            "text": msg.get("text", ""),
+            "truncated": bool(msg.get("truncated")),
+            "error": msg.get("error", ""),
+        }
+
+    def mail_get(self, mid: str) -> dict | None:
+        now = asyncio.get_running_loop().time()
+        entry = self.mailbox.get(mid)
+        if entry and now - entry["ts"] > MAILBOX_TTL:
+            self.mailbox.pop(mid, None)
+            return None
+        return entry
 
 
 async def relay(
@@ -164,6 +194,45 @@ async def ws_handler(ws, hub: Hub) -> None:
                 if fut and not fut.done():
                     fut.set_result(msg)
                     print(f"[bridge-ws] page_result matched: {msg.get('id')}", flush=True)
+            elif t == "reply_event":
+                # v0.6.0: watcher 正常完成或 missed 兜底，都落 mailbox（无 Future，纯轮询）
+                mid = msg.get("id")
+                hub.mail_put(msg)
+                print(f"[bridge-ws] reply_event stored: {mid} ok={msg.get('ok')}", flush=True)
+            elif t == "wait_reply":
+                # 纯轮询版：检测本身要 3.6s 采样窗口，精确唤醒无意义（评审结论）
+                mid = msg.get("id")
+                wait_cap = min(float(msg.get("timeout", 300)), 600)
+                deadline = asyncio.get_running_loop().time() + wait_cap
+                entry = None
+                while True:
+                    entry = hub.mail_get(mid)
+                    if entry:
+                        break
+                    if asyncio.get_running_loop().time() >= deadline:
+                        break
+                    await asyncio.sleep(1.0)
+                out = json.dumps(
+                    {"type": "reply_result", "id": mid,
+                     "found": bool(entry),
+                     **({"ok": entry["ok"], "text": entry["text"],
+                         "truncated": entry["truncated"], "error": entry["error"]}
+                        if entry else {"ok": False,
+                                       "error": f"timeout ({wait_cap:.0f}s), no reply in mailbox"})},
+                    ensure_ascii=False)
+                print(f"[bridge-ws] send: {out}", flush=True)
+                await ws.send(out)
+            elif t == "mailbox_get":
+                mid = msg.get("id")
+                entry = hub.mail_get(mid)
+                out = json.dumps(
+                    {"type": "reply_result", "id": mid, "found": bool(entry),
+                     **({"ok": entry["ok"], "text": entry["text"],
+                         "truncated": entry["truncated"], "error": entry["error"]}
+                        if entry else {"ok": False, "error": "not in mailbox (picked up or expired)"})},
+                    ensure_ascii=False)
+                print(f"[bridge-ws] send: {out}", flush=True)
+                await ws.send(out)
             else:
                 reply = {"type": "error", "error": f"unknown type: {t}"}
                 print(f"[bridge-ws] send: {json.dumps(reply)}", flush=True)

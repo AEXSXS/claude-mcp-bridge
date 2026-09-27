@@ -157,7 +157,28 @@ async function waitForReply(prevText, timeoutMs = 150000) {
   throw new Error(`timeout waiting for reply (${timeoutMs}ms)`);
 }
 
-async function handlePageAction(action, payload) {
+// v0.6.0: send_prompt 成功后无条件挂 reply watcher（与 wait 参数无关）。
+// watcher 判定生成完成后，经 background 推 reply_event 给 server 的 mailbox。
+// 标签页关闭/导航时本上下文直接死掉，无法"上报自己死了"——超时兜底由
+// background 的 missed 计时器与 server 端 wait_reply 的 timeout 分层负责。
+
+async function watchAndReport(promptId, prevText, timeoutMs) {
+  try {
+    const reply = await waitForReply(prevText, timeoutMs);
+    browser.runtime.sendMessage({
+      type: "bridge-reply-event",
+      id: promptId,
+      ok: true,
+      text: reply.slice(0, 4000),
+      truncated: reply.length > 4000,
+    });
+  } catch (e) {
+    // 静默：等 background 的 missed 计时器兜底（死掉的上下文没有机会上报）
+    console.warn("[claude-mcp-bridge] watcher ended:", e.message || e);
+  }
+}
+
+async function handlePageAction(action, payload, promptId) {
   console.log("[claude-mcp-bridge] page action:", action, payload);
   try {
     let data;
@@ -177,7 +198,10 @@ async function handlePageAction(action, payload) {
       const prevText = readLastReply()?.text || ""; // 基线：发送前的最后一条回复
       data = fillPrompt(String(payload.text || ""));
       await new Promise((r) => setTimeout(r, 350)); // 等 React 状态刷新启用发送钮
-      data.send = clickSend();
+      data.send = clickSend(); // 失败会抛错 -> 不挂 watcher（发送失败不该有回复可等）
+      data.prompt_id = promptId;
+      // v0.6.0: 发送成功即挂 watcher（fire-and-forget），完成后推 reply_event
+      watchAndReport(promptId, prevText, Number(payload.timeout_ms) || 150000);
       if (payload.wait) {
         const reply = await waitForReply(prevText, Number(payload.timeout_ms) || 150000);
         data.reply = { text: reply.slice(0, 4000), truncated: reply.length > 4000 };
@@ -199,7 +223,7 @@ async function handlePageAction(action, payload) {
 if (typeof browser !== "undefined" && browser.runtime && browser.runtime.onMessage) {
   browser.runtime.onMessage.addListener((msg) => {
     if (!msg || msg.type !== "bridge-page-cmd") return undefined;
-    return Promise.resolve(handlePageAction(msg.action, msg.payload || {}));
+    return Promise.resolve(handlePageAction(msg.action, msg.payload || {}, msg.id));
   });
 }
 

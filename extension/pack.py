@@ -9,7 +9,7 @@ import os
 import zipfile
 
 FILES = ["manifest.json", "background.js", "content.js"]
-VERSION = "0.5.1"
+VERSION = "0.6.0"
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(HERE, "..", f"claude-mcp-bridge-{VERSION}.xpi")
 

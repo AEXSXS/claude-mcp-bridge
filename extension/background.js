@@ -61,6 +61,18 @@ function connect() {
   };
 }
 
+// v0.6.0: 单飞锁（同一 tab 有 send_prompt 在途时拒绝新请求）+ missed 计时器
+// + reply_event 转发（content watcher 判定完成 / missed 兜底，二选一必达 mailbox）
+const inFlight = new Map(); // tabId -> { id, timer }
+
+function clearInFlight(tabId, id) {
+  const cur = inFlight.get(tabId);
+  if (cur && (!id || cur.id === id)) {
+    if (cur.timer) clearTimeout(cur.timer);
+    inFlight.delete(tabId);
+  }
+}
+
 // Phase 3: page_cmd 路由 -> claude.ai 标签页 content script 执行 -> page_result 回传
 async function handlePageCmd(msg) {
   const id = msg.id;
@@ -68,12 +80,32 @@ async function handlePageCmd(msg) {
     const tabs = await browser.tabs.query({ url: "https://claude.ai/*" });
     if (!tabs.length) throw new Error("no claude.ai tab open");
     const tab = tabs.find((t) => t.active) || tabs[0];
+    if (msg.action === "send_prompt" && inFlight.has(tab.id)) {
+      const busyId = inFlight.get(tab.id).id;
+      throw new Error(`busy: prompt ${busyId} still in flight on this tab (single-flight lock)`);
+    }
     const res = await browser.tabs.sendMessage(tab.id, {
       type: "bridge-page-cmd",
+      id,
       action: msg.action,
       payload: msg.payload || {},
     });
     console.log("[claude-mcp-bridge] page_cmd result:", msg.action, res);
+    if (msg.action === "send_prompt" && res?.ok) {
+      // missed 兜底：content 死掉无法自报，background 独立计时，超时主动报 missed
+      const timeoutMs = Number(msg.payload?.timeout_ms) || 150000;
+      const timer = setTimeout(() => {
+        const cur = inFlight.get(tab.id);
+        if (cur && cur.id === id) {
+          inFlight.delete(tab.id);
+          send({
+            type: "reply_event", id, ok: false,
+            error: `missed: no reply detected within ${timeoutMs}ms (tab closed or watcher died)`,
+          });
+        }
+      }, timeoutMs + 30000);
+      inFlight.set(tab.id, { id, timer });
+    }
     send({ type: "page_result", id, ok: !!res?.ok, data: res?.data, error: res?.error });
   } catch (e) {
     console.error("[claude-mcp-bridge] page_cmd routing failed:", e);
@@ -98,7 +130,7 @@ function send(obj) {
   return false;
 }
 
-browser.runtime.onMessage.addListener((msg) => {
+browser.runtime.onMessage.addListener((msg, sender) => {
   if (msg && msg.type === "bridge-ping") {
     return Promise.resolve({ sent: send({ type: "ping" }) });
   }
@@ -111,6 +143,16 @@ browser.runtime.onMessage.addListener((msg) => {
       alive: true,
       ws: ws ? READY_STATE[ws.readyState] : "none",
     });
+  }
+  if (msg && msg.type === "bridge-reply-event") {
+    // v0.6.0: content watcher 判定生成完成 -> 转发 reply_event 给 server mailbox
+    const tabId = sender?.tab?.id;
+    if (tabId !== undefined) clearInFlight(tabId, msg.id);
+    send({
+      type: "reply_event", id: msg.id, ok: !!msg.ok,
+      text: msg.text, truncated: !!msg.truncated, error: msg.error,
+    });
+    return Promise.resolve({ forwarded: true });
   }
   return undefined;
 });

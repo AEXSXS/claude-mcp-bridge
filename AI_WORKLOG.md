@@ -945,3 +945,37 @@ Claude 回复原文开头："你好小九！收到了 👋 这条消息如果真
     整文件写入 → 待用 commit stats 核对 deletions≈0）。
   - 项目当前整体状态：三阶段功能（骨架/WebSocket 桥接/DOM 交互）均已验收通过，
     仅剩 1 项非阻塞性文档补记待办。
+---
+### [2026-09-28 07:45] 🔵计划中 → 🟢已完成：v0.6.0 推送式架构（mailbox 轮询版）
+按协调者评审定稿实施（方向通过 / 砍 Future / missed 上报方修正 / 并发与发送失败两条必改）。
+
+**改动清单**：
+- **content.js**：send_prompt 成功后无条件挂 `watchAndReport(promptId, prevText, timeout)`
+  （fire-and-forget，与 wait 参数无关）；完成 → `bridge-reply-event` 发给 background。
+  clickSend 抛错即整体抛错，不挂 watcher（评审④-2）。标签页关闭时本上下文死亡，
+  不自报 missed（评审②：死者无法上报）。
+- **background.js**：①page_cmd 转发带 id；②**单飞锁** `inFlight: Map<tabId,{id,timer}>`，
+  同 tab 在途时新 send_prompt 直接拒绝（评审④-1）；③**missed 兜底计时器**
+  （timeout+30s），超时未完成主动推 `reply_event{ok:false,error:"missed..."}`——
+  background 是活着的一方，由它兜底；④收 `bridge-reply-event` → 清锁 →
+  转发 `reply_event` 给 server（onMessage 增加 sender 参数取 tabId）。
+- **bridge_ws.py**：新增 mailbox（内存 dict + TTL 600s，写入时顺手清理过期项，
+  无后台协程——评审③）；新消息类型 `reply_event`（存邮箱）/ `wait_reply`
+  （**纯轮询 1s 步进**，cap 600s，评审①：砍 Future）/ `mailbox_get`（迟到取件）。
+- **server.py**：`send_prompt` 默认 wait=False 立即返回 prompt_id；
+  新增 `wait_reply(prompt_id, timeout_s)`；`get_reply(prompt_id="")` 带 id 走
+  mailbox 迟到取件、不带走页面抓取；wait=True 保留兼容（server 侧等）。
+  prompt_id 直接复用 page_cmd 的 id（评审④-6）。
+  修复重构引入的隐患：`ws_request` 增加 want_type/want_id 过滤——page_cmd 会
+  广播回声给发送者自己，旧版按 type 过滤，重构第一版丢了，已补回并实测确认回声存在。
+- **manifest/pack**：0.6.0，已打包 claude-mcp-bridge-0.6.0.xpi。
+
+**实测证据**（test_v060.py，假扩展模拟，备用端口 8775/8776，9/9 PASS）：
+- 提交即回 prompt_id ✓；扩展延迟 2s 推 reply_event，wait_reply 2.0s 返回完整文本 ✓
+- mailbox_get 迟到取件取回同一份 ✓；missed 条目 ok=False 可查 ✓；TTL 清理 ✓
+- node --check 两 JS 语法通过；广播回声过滤单测确认
+- **未测**（需真机）：单飞锁（JS 侧）、missed 计时器真触发、真实 claude.ai 全链路
+
+**真机验证步骤（待用户）**：重启 bridge_ws.py（正式 8765/8766）→ Firefox 加载
+claude-mcp-bridge-0.6.0.xpi → 刷新 claude.ai → send_prompt 不带 wait 应秒回 prompt_id
+→ wait_reply 取到回复；期间再发第二条应报 busy（单飞锁）。
