@@ -49,25 +49,49 @@ function sendButton() {
   return document.querySelector('[data-testid="chat-input-send"]');
 }
 
-// ProseMirror contenteditable 填字：execCommand insertText 走 React 同步；
-// 失败则退回 paste 事件（DataTransfer），再校验
+// ProseMirror contenteditable 填字：多方案逐级退回，每步带诊断
+const norm = (s) => (s || "").replace(/\s+/g, " ").trim();
+
 function fillPrompt(text) {
   const el = chatInput();
   if (!el) throw new Error("chat-input not found");
+  const diag = { focused: el.contains(document.activeElement) || document.activeElement === el };
+  const done = () => norm(el.textContent) === norm(text);
+
   el.focus();
-  // 清空已有内容
+  diag.focused = el.contains(document.activeElement) || document.activeElement === el;
+
+  // 方案1：selectAll + insertText（走 beforeinput，React/PM 通常同步）
   document.execCommand("selectAll", false, null);
   let ok = document.execCommand("insertText", false, text);
-  if (!ok || (el.textContent || "").trim() !== text.trim()) {
+  diag.s1_execCommand = { ok, content: (el.textContent || "").slice(0, 80) };
+  if (ok && done()) { diag.hit = 1; return diag; }
+
+  // 方案2：直接写 DOM + input 事件（ProseMirror MutationObserver 会接管变更）
+  el.textContent = text;
+  el.dispatchEvent(new InputEvent("input", {
+    bubbles: true, cancelable: true, inputType: "insertText", data: text,
+  }));
+  diag.s2_directDOM = { content: (el.textContent || "").slice(0, 80) };
+  if (done()) { diag.hit = 2; return diag; }
+
+  // 方案3：合成 paste 事件
+  try {
     const dt = new DataTransfer();
     dt.setData("text/plain", text);
     el.dispatchEvent(new ClipboardEvent("paste", {
       clipboardData: dt, bubbles: true, cancelable: true,
     }));
-    ok = (el.textContent || "").trim() === text.trim();
+    diag.s3_paste = { content: (el.textContent || "").slice(0, 80) };
+  } catch (e) {
+    diag.s3_paste = { error: String(e) };
   }
-  if (!ok) throw new Error("fill failed: editor did not accept text");
-  return { filled: text.length, preview: text.slice(0, 60) };
+  if (done()) { diag.hit = 3; return diag; }
+
+  diag.final = (el.textContent || "").slice(0, 200);
+  const err = new Error("fill failed: editor did not accept text");
+  err.diag = JSON.stringify(diag);
+  throw err;
 }
 
 function clickSend() {
@@ -167,7 +191,8 @@ async function handlePageAction(action, payload) {
     return { ok: true, data };
   } catch (e) {
     console.warn("[claude-mcp-bridge] page action failed:", action, e);
-    return { ok: false, error: String((e && e.message) || e) };
+    const extra = e && e.diag ? " | diag=" + e.diag : "";
+    return { ok: false, error: String((e && e.message) || e) + extra };
   }
 }
 

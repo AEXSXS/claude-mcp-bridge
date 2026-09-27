@@ -871,3 +871,10 @@ CONNECTING，旧 send() 直接丢弃且无人重发——所以握手成功却�
   本地 AI 经 MCP 即可「发问题→拿 Claude 回复」。剩余真机验证项：
   ①ProseMirror 填字是否触发 React 状态（发送钮解禁）
   ②回复文本稳定性检测在真实流式输出下的表现
+
+### [2026-09-28 06:47] 🟢已完成：真机端到端验证通过（v0.5.1）
+- page_info 实测：claude.ai/new，输入框/发送钮就绪
+- send_prompt(wait) 实测：填字（方案1 execCommand 命中）→ 发送 → 等生成 → 抓回回复「链路测试成功」，全链路零人工干预
+- 第一次填字失败根因疑似页面焦点/时序；fillPrompt 已改为三级退回（execCommand → 直接写DOM+input事件 → 合成paste），失败时带逐步诊断
+- 新增 mcp_server/test_live.py：不经 MCP 客户端、直连内部 8766 端口测 page_cmd，调试用
+- 扩展无弹窗 UI 属正常设计；用户曾误判"插件不可用"，实为后台型扩展
