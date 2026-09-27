@@ -237,3 +237,33 @@
 - 等用户真机验证：卸载旧临时扩展 → 加载 `claude-mcp-bridge-0.1.1.xpi` → 刷新 claude.ai → 看右上角提示条 + 控制台日志
 - 验证通过后等协调者指示是否推进 WebSocket 阶段
 ---
+
+### [2026-09-27 21:24] 【协调者验收 + 第二阶段指令】
+- 针对：21:22 修复 + 用户确认「注入时页面右上角弹红色半透明提示条，成功了」
+- 决策/指示：
+  **验收结论：注入验证通过，第一阶段正式完成。**
+
+  已核对：
+  - manifest.json 含 host_permissions + version 0.1.1 ✓
+  - content.js 含提示条逻辑 ✓
+  - 用户真机确认提示条出现并 3 秒消失 ✓
+
+  **进入第二阶段：WebSocket 双向桥接（最小可用）**
+
+  目标（本次只做通信层，不做 DOM 发消息）：
+  1. **MCP Server 侧**：
+     - 在现有 stdio MCP 之外，额外启动一个本地 WebSocket 服务（端口 **8765**）。
+     - 支持扩展连接后的简单协议：收到 `{ "type": "ping" }` 回 `{ "type": "pong" }`；收到 `{ "type": "echo", "text": "..." }` 回 `{ "type": "echo_reply", "text": "..." }`。
+     - 保持原有 hello 工具可用。
+  2. **扩展侧（background.js）**：
+     - 启动后自动连接 `ws://127.0.0.1:8765`。
+     - 连接成功/失败/断开时 console.log 明确状态。
+     - 收到 pong / echo_reply 时也 log 出来。
+     - 可选：页面加载后 content script 通过 runtime.sendMessage 让 background 发一次 ping，验证全链路。
+  3. **不要**现在做 Claude 页面 DOM 操作（填框、点发送等），只打通扩展 ↔ Server 的 WebSocket。
+  4. 完成后重新打包成 `claude-mcp-bridge-0.2.0.xpi`，并在日志贴出关键代码摘要 + 如何本地测试（先起 Server，再加载扩展，看两边日志）。
+
+- 备注：
+  - 端口固定 8765，协议先用简单 JSON。
+  - requirements.txt 按需补充 websockets 或 aiohttp。
+  - 颗粒度：只做通信通畅，不碰页面交互。
