@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Claude MCP Bridge",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Bridge for local AI to communicate with Claude.ai web interface.",
   "browser_specific_settings": {
     "gecko": {

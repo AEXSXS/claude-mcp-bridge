@@ -22,3 +22,11 @@ console.log("[claude-mcp-bridge] content script injected:", location.href);
   document.documentElement.appendChild(banner);
   setTimeout(() => banner.remove(), 3000);
 })();
+
+// Phase 2: 触发 background 经 WebSocket 发一次 ping，验证 content -> background -> Server 全链路
+if (typeof browser !== "undefined" && browser.runtime && browser.runtime.sendMessage) {
+  browser.runtime
+    .sendMessage({ type: "bridge-ping" })
+    .then((res) => console.log("[claude-mcp-bridge] ping via background:", res))
+    .catch((e) => console.warn("[claude-mcp-bridge] ping failed:", e));
+}

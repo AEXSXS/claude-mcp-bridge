@@ -267,3 +267,39 @@
   - 端口固定 8765，协议先用简单 JSON。
   - requirements.txt 按需补充 websockets 或 aiohttp。
   - 颗粒度：只做通信通畅，不碰页面交互。
+---
+
+### [2026-09-27 21:30] 🟢已完成：第二阶段 —— WebSocket 双向桥接（最小可用）v0.2.0
+**目标**：打通扩展 ↔ 本地 Server 的 WebSocket 通信层（ping/echo 协议），不碰 Claude 页面 DOM。
+
+**已做的事**：
+- 新增 `mcp_server/bridge_ws.py`：常驻 WS 服务（`ws://127.0.0.1:8765`，websockets 17.1）。协议（JSON text）：
+  - `{"type":"ping"}` → `{"type":"pong"}`
+  - `{"type":"echo","text":"..."}` → `{"type":"echo_reply","text":"..."}`
+  - 未知 type / 非法 JSON → `{"type":"error","error":"..."}`
+  - 与 `server.py`（MCP stdio）为**独立进程、独立入口**：MCP run() 是阻塞的，同进程并跑需动 MCP 库内部 session，独立进程更稳且满足本阶段目标；后续工具需与 WS 互通时再设计跨进程通道（已列入待设计点）
+- 重写 `extension/background.js`：自动连 `ws://127.0.0.1:8765`，3 秒自动重连；onopen/onerror/onclose/onmessage 全部明确 log；pong / echo_reply 专门 log；runtime.onMessage 支持 `bridge-ping` / `bridge-echo` 两消息
+- `extension/content.js`：注入后自动 `runtime.sendMessage({type:"bridge-ping"})` 触发 background 发 ping（验证 content→background→Server 全链路）；提示条保留
+- `manifest.json` version → **0.2.0**；`requirements.txt` 补 `websockets>=12.0`；`pack.py` VERSION 同步
+- 重新打包 `claude-mcp-bridge-0.2.0.xpi`（仓库根目录，随本 commit 入库）
+
+**结果/验证**（服务端与客户端双端实测）：
+- WS 服务后台运行，Python 客户端连入后依次发 ping / echo / unknown / 非法 JSON，回包逐条正确：
+  `pong` / `{"type":"echo_reply","text":"hello bridge"}` / `{"type":"error","error":"unknown type: whatever"}` / `{"type":"error","error":"invalid json"}`
+- 服务端日志完整记录 connected / recv / send / removed
+- MCP 侧回归：hello 工具实测仍可用（`hello, phase2!`）
+- 扩展↔Server 的真机验证（加载 0.2.0 → 看 background 控制台 "WS connected" + pong 日志）需用户/协调者侧操作，本环境无浏览器 GUI
+
+**本地测试方法**：
+1. 起 Server：`python mcp_server/bridge_ws.py`（看到 listening on ws://127.0.0.1:8765）
+2. 加载扩展：about:debugging → 临时加载 `claude-mcp-bridge-0.2.0.xpi`
+3. 打开 claude.ai → background 控制台应见：`WS connected` → `sent: {"type":"ping"}` → `pong received`；服务端窗口同时打印 recv/send
+4. 断服务再启可验证扩展 3 秒自动重连
+
+**下一步打算**：
+- 等协调者验收 + 真机测试结果，再决定第三阶段（Claude 页面 DOM 发消息）
+
+**风险/疑问**：
+- Firefox event page 休眠可能导致 background 的 WS 长连接不稳定（临时加载验证阶段影响小）；若真机出现频繁断连，后续可加 keepalive 或改用 persistent background（MV3 Firefox 允许 `"persistent": true`？需查证）——留待协调者定夺
+- 跨进程设计点：MCP 工具进程与 WS 服务进程目前分离，第三阶段做「MCP 工具→WS→扩展→页面」链路时需确定合并方案（如 aiohttp 同时挂 MCP streamable-http 与 WS，或 stdio 进程内 anyio 并跑）
+---
