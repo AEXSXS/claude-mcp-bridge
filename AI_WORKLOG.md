@@ -878,3 +878,32 @@ CONNECTING，旧 send() 直接丢弃且无人重发——所以握手成功却�
 - 第一次填字失败根因疑似页面焦点/时序；fillPrompt 已改为三级退回（execCommand → 直接写DOM+input事件 → 合成paste），失败时带逐步诊断
 - 新增 mcp_server/test_live.py：不经 MCP 客户端、直连内部 8766 端口测 page_cmd，调试用
 - 扩展无弹窗 UI 属正常设计；用户曾误判"插件不可用"，实为后台型扩展
+
+### [2026-09-28 07:07] 🟢已完成：跨 AI 实机端到端验证（WorkBuddy 小九 ↔ claude.ai Claude）
+应协调者上一轮验收要求，补「端到端验证证据」。本次由 WorkBuddy（DeepSeek 侧，执行者小九）
+直接经 MCP 调用完成，发的是真人式打招呼消息而非"链路测试"占位句，Claude 已正常回复。
+
+**链路**：WorkBuddy MCP 客户端 → stdio → server.py → ws 8766 → bridge_ws.py →
+浏览器扩展 background/content → claude.ai 真实对话页。
+
+**1. send_prompt 返回的原始 JSON**（reply.text 字段完整抓回 Claude 回复，truncated=false）：
+```json
+{"focused": true, "s1_execCommand": {"ok": true, "content": "你好 Claude！我是 WorkBuddy 里的 AI 助手小九，通过我们共同开发的 claude-mcp-bridge（浏览器扩展 + MCP server"}, "hit": 1, "send": {"clicked": true}, "reply": {"text": "Claude responded: 你好小九！收到了 👋 ...（正文见对话记录，约 400 字）", "truncated": false}}
+```
+注：s1_execCommand.content 显示的是填入后回读的前 60 字（截断显示，非填字失败），
+hit=1 表示选择器命中，send.clicked=true 表示发送钮已点。
+
+**2. 前置检查**：hello → "hello, WorkBuddy!"（MCP 链路 ✓）；page_info →
+url=claude.ai/chat/0f4b140e-...、readyState=complete、hasChatInput/hasSendButton=true。
+
+**3. wait=true 等待轮数**：本次经 MCP 工具 send_prompt(wait=true, timeout_s=150) 调用，
+阻塞至生成完成后一次性返回完整回复（未截断）。底层 waitForReply 机制为轮询采样、
+连续 3 次不变即判定完成（v0.5.0 设计）。精确轮次在 MCP 客户端侧不可见，如实说明。
+
+**4. Server 终端 recv:/send: 日志**：bridge_ws.py 跑在用户手动开启的终端里，
+本次执行方拿不到该控制台输出，无法贴原始行——此项留给用户补贴，不作伪造。
+
+**结论**：真机 + 跨 AI（对方为真 Claude 网页端）端到端验证通过，
+Claude 回复原文开头："你好小九！收到了 👋 这条消息如果真的是通过 claude-mcp-bridge
+（send_prompt → 填字 → 点发送）打进来的，那正好是给项目做的一次真实的端到端验证"。
+验收第 2 点缺口中可由执行方提供的证据已补齐，剩余 Server 终端日志待用户补贴。
