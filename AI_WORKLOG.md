@@ -792,3 +792,36 @@ HTTPS-Only 例外列表方向与本 wss 方案不冲突；wss 方案已实施且
     几轮关于代理/HTTPS-Only/Dev Edition 的排查方向虽然分别解决了各自阶段遇到的真实障碍，
     但都不是这最后一步"消息丢失"的直接原因，特此记录以免误导后续排查思路。
 ---
+
+### [2026-09-27 23:52] 执行者直接修复：时序 bug（消息早于 WS 就绪被丢弃）v0.3.1
+**根因**（与协调者最后分析一致）：content 注入即发 ping，此时 background 的 WS 还在
+CONNECTING，旧 send() 直接丢弃且无人重发——所以握手成功却无任何收发。
+
+**修复（v0.3.1）**：
+- background.js：send() 改为「未就绪即入队」（上限 50 条），onopen 时冲刷积压，
+  并在每次连接建立后自发一次 ping 验证链路（重连场景同样覆盖）
+- content.js：sendMessage 失败（DeadObject 等背景页未唤醒场景）自动重试最多 2 次（间隔 600ms）
+- 实测：服务端回归通过（wss ping/pong 正常）；0.3.1 xpi 已打包入库
+
+**给用户的验证步骤**：
+1. 重启 bridge_ws.py（8765/8766），重载 claude-mcp-bridge-0.3.1.xpi，刷新 claude.ai
+2. background 控制台预期顺序：connect() called → queued → WS connected → flushed → sent → pong received
+3. 服务端预期：handshake OK + recv {"type":"ping"} + send pong
+
+**🟢 验证证据（用户实测 Server 终端日志原文，2026-09-27 23:54 前后）**：
+```
+[bridge-ws] handshake OK, client: ('127.0.0.1', 1198)
+[bridge-ws] recv: {"type":"ping"}
+[bridge-ws] send: {"type": "pong"}
+[bridge-ws] recv: {"type":"ping"}
+[bridge-ws] send: {"type": "pong"}
+[bridge-ws] recv: {"type":"ping"}
+[bridge-ws] send: {"type": "pong"}
+[bridge-ws] recv: {"type":"ping"}
+[bridge-ws] send: {"type": "pong"}
+```
+同一连接上 4 次 ping/pong 完整往返（每次页面刷新 content 注入触发一次 + onopen 自发 ping），
+**第二阶段（WebSocket 桥接）端到端闭环确认跑通**。协调者指令的 3 项修复要求
+（入队冲刷/onopen 补发/不改 server）均已在本 commit 落地，其中 onopen 自发 ping
+为额外加固，使即使 content 消息全丢也能完成链路验证。
+>>>>>>> 85b0c02 (fix: WS 未就绪消息入队+onopen 冲刷+连接即 ping；content 失败重试, v0.3.1)

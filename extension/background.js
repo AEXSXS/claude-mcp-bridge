@@ -1,11 +1,17 @@
 // Claude MCP Bridge - background (Firefox MV3 event page)
-// Phase 2: WebSocket 连接 ws://127.0.0.1:8765，断线自动重连。
+// Phase 2: WebSocket 连接 wss://127.0.0.1:8765，断线自动重连。
+// 时序修复：WS 未就绪时消息入队，onopen 统一冲刷（原逻辑直接丢弃导致
+// content 的 ping 在 CONNECTING 阶段被丢，握手成功后无任何收发）。
 
 const WS_URL = "wss://127.0.0.1:8765";
 const RECONNECT_MS = 3000;
+const QUEUE_LIMIT = 50;
 
 let ws = null;
 let retryTimer = null;
+let sendQueue = [];
+
+const READY_STATE = ["CONNECTING", "OPEN", "CLOSING", "CLOSED"];
 
 function scheduleReconnect(reason) {
   console.log(`[claude-mcp-bridge] WS closed (${reason}), retry in ${RECONNECT_MS}ms`);
@@ -15,8 +21,6 @@ function scheduleReconnect(reason) {
     connect();
   }, RECONNECT_MS);
 }
-
-const READY_STATE = ["CONNECTING", "OPEN", "CLOSING", "CLOSED"];
 
 function connect() {
   const existing = ws ? READY_STATE[ws.readyState] : "none";
@@ -32,7 +36,16 @@ function connect() {
     scheduleReconnect("create failed");
     return;
   }
-  ws.onopen = () => console.log("[claude-mcp-bridge] WS connected:", WS_URL);
+  ws.onopen = () => {
+    console.log("[claude-mcp-bridge] WS connected:", WS_URL);
+    // 冲刷积压消息（含重连场景），然后自发一次 ping 验证链路
+    const pending = sendQueue.splice(0);
+    for (const raw of pending) {
+      ws.send(raw);
+      console.log("[claude-mcp-bridge] flushed queued:", raw);
+    }
+    send({ type: "ping" });
+  };
   ws.onerror = (e) => console.error("[claude-mcp-bridge] WS error:", e);
   ws.onclose = () => scheduleReconnect("closed");
   ws.onmessage = (ev) => {
@@ -47,13 +60,20 @@ function connect() {
   };
 }
 
+// 返回 true 表示已发出或已入队（都不丢）
 function send(obj) {
+  const raw = JSON.stringify(obj);
   if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify(obj));
-    console.log("[claude-mcp-bridge] sent:", JSON.stringify(obj));
+    ws.send(raw);
+    console.log("[claude-mcp-bridge] sent:", raw);
     return true;
   }
-  console.warn("[claude-mcp-bridge] WS not open, drop:", JSON.stringify(obj));
+  if (sendQueue.length < QUEUE_LIMIT) {
+    sendQueue.push(raw);
+    console.log(`[claude-mcp-bridge] WS not open, queued (${sendQueue.length}/${QUEUE_LIMIT}):`, raw);
+    return true;
+  }
+  console.warn("[claude-mcp-bridge] queue full, drop:", raw);
   return false;
 }
 

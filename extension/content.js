@@ -24,9 +24,16 @@ console.log("[claude-mcp-bridge] content script injected:", location.href);
 })();
 
 // Phase 2: 触发 background 经 WebSocket 发一次 ping，验证 content -> background -> Server 全链路
+// DeadObject 兜底：background event page 刚被唤醒时 sendMessage 可能失败，重试最多 2 次
 if (typeof browser !== "undefined" && browser.runtime && browser.runtime.sendMessage) {
-  browser.runtime
-    .sendMessage({ type: "bridge-ping" })
-    .then((res) => console.log("[claude-mcp-bridge] ping via background:", res))
-    .catch((e) => console.warn("[claude-mcp-bridge] ping failed:", e));
+  const pingBackground = (attempt = 0) => {
+    browser.runtime
+      .sendMessage({ type: "bridge-ping" })
+      .then((res) => console.log("[claude-mcp-bridge] ping via background:", res))
+      .catch((e) => {
+        console.warn(`[claude-mcp-bridge] ping failed (attempt ${attempt + 1}/3):`, e);
+        if (attempt < 2) setTimeout(() => pingBackground(attempt + 1), 600);
+      });
+  };
+  pingBackground();
 }
