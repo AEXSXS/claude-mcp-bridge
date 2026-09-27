@@ -321,3 +321,52 @@
   如果 Server 已启动仍出现 `sent: false`，请把 background 控制台的完整日志贴出来，再进一步排查。
 
 - 备注：当前不需要执行者改代码，先确认 Server 是否在跑。
+---
+
+### [2026-09-27 21:40] 【协调者诊断 + 排查指令】
+- 针对：用户反馈——Server 已启动（`python bridge_ws.py`，非之前提到的 venv，而是
+  `C:\Users\hp\AppData\Local\Programs\Python\Python310\python.exe`），日志显示
+  `listening on ws://127.0.0.1:8765`，随后持续反复报错：
+  ```
+  opening handshake failed
+  ...
+  EOFError: line without CRLF
+  ...
+  websockets.exceptions.InvalidMessage: did not receive a valid HTTP request
+  ```
+  （同一组 traceback 连续重复出现多次）
+- 决策/指示：
+  **诊断方向**：这类报错的含义是——有客户端建立了 TCP 连接，但没有发送合法的 HTTP
+  升级请求就断开了（可能是空字节，也可能是非 HTTP 流量）。需要先分清来源：
+  1. 是不是就是 Firefox 扩展在连（`background.js` 有 3 秒自动重连逻辑，若一直连不上
+     会持续重试，时间上有可能对得上）；
+  2. 还是本机其他进程/安全软件在扫描 8765 端口（这种情况下即使不开 Firefox 报错也会
+     持续出现）。
+
+  **本次任务（只做诊断，不改协议/不碰 DOM 逻辑）**：
+  1. 修改 `mcp_server/bridge_ws.py`：加上连接来源日志。至少要能在每次 handshake
+     成功或失败时打印 `websocket.remote_address`（IP:端口）。如果 websockets 库支持，
+     打开其内置 logger（`logging.basicConfig(level=logging.DEBUG)` 并对
+     `"websockets"` logger 设置 DEBUG），确认失败的连接来自本机哪个端口范围/是否
+     每次端口号都变化（变化说明是新连接不断建立，符合扫描或重连特征）。
+  2. 请用户配合做一次对照实验，并把结果原文（不只是描述，要贴日志文本）反馈：
+     - **步骤 A**：完全关闭 Firefox（不加载扩展），只保留 `bridge_ws.py` 单独运行，
+       观察 5-10 秒——这段时间内 "opening handshake failed" 是否还会自己反复出现？
+       - 如果 **还在报错**：说明来源不是扩展，是本机别的东西在扫 8765 端口（比如杀毒
+         软件/安全防护），需要考虑换个端口或者加白名单排查。
+       - 如果 **不再报错**：说明确实是扩展在连但连不上，进入下一步。
+     - **步骤 B**（仅在步骤A显示"不报错"时做）：重新加载 Firefox 扩展 v0.2.0，打开
+       claude.ai，同时观察三处：
+       - Server 终端：新的 handshake 日志（含来源信息，看是否还失败）
+       - 页面控制台（F12）：`ping via background: { sent: ? }`
+       - 扩展 background 控制台（about:debugging → Inspect）：完整日志文本
+  3. 把 A/B 两步的**原始日志文本**（尤其是新加的来源信息）整理进下一条 🟢/🔴 记录，
+     不要只用"好了/还是不行"这种结论性描述。
+
+- 备注：
+  - 分支已确认为 `main`（仓库只有这一个分支，本地远程一致）。
+  - 这一步只加日志排查代码，**不要**改动 ping/echo 协议、不要动 background.js/
+    content.js 的业务逻辑，避免排查过程中引入新变量。
+  - 如果步骤 A 证实是本机安全软件在扫描端口，下一轮我会再决定是换端口还是加白名单，
+    现在先不要自行改端口号。
+---
