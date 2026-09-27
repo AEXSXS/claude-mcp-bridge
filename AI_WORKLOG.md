@@ -61,3 +61,26 @@
   - 完成后在本日志追加 🟢 记录，并贴出目录树 + 关键文件内容摘要。
   - 不要修改已有 README 以外的文件，除非是新建目录/文件。
   - 本地项目路径请在下一轮日志中确认写明。
+---
+
+### [2026-09-27 20:51] 【协调者指令】
+- 针对：用户明确要求「要火狐浏览器的扩展」——修正浏览器目标
+- 决策/指示：
+  1. **浏览器扩展目标改为优先 Firefox**。
+     - 使用 **Firefox 兼容的 Manifest V3**（Firefox 109+ 已支持 MV3）。
+     - 目录仍叫 `extension/`，但 manifest.json、background、content script 按 Firefox 要求编写。
+     - 如有必要可后续再加 Chrome 兼容层，当前阶段只保证 Firefox 能加载并注入 `claude.ai`。
+  2. 其他决策保持不变（Python MCP Server、WebSocket、双向基础）。
+  3. **第一阶段任务更新**：
+     - 目录结构保持不变（`mcp_server/` + `extension/`）。
+     - `extension/` 下创建**最小 Firefox Manifest V3 扩展骨架**：
+       - manifest.json（browser_specific_settings 等 Firefox 字段按需加）
+       - background.js（或 service worker）
+       - content.js（匹配 `https://claude.ai/*`）
+     - 能在 Firefox 的 about:debugging 中临时加载，content script 能成功注入 claude.ai 页面即可。
+     - 仍然**不要**实现真正的发送逻辑或 WebSocket 连接。
+
+- 备注：
+  - 如果执行者已经按之前的 Chrome 指令开始动手，请停止并按本指令改为 Firefox 目标。
+  - 完成后同样追加 🟢 记录，附目录树 + 关键文件摘要（尤其是 manifest.json 内容）。
+  - 本地项目路径请一并确认写明。
