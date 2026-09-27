@@ -167,3 +167,24 @@
 - 备注：
   - 完成后在日志追加 🟢 记录，说明打包脚本位置、生成的 .xpi 文件名，以及如何验证（用户可用 about:debugging → 临时加载附加组件 → 选择该 .xpi）。
   - 本地路径已确认，无需再重复。
+---
+
+### [2026-09-27 21:15] 🟢已完成：.xpi 打包能力 + 骨架包产出（含 Firefox 验证问题反馈）
+**目标**：按 21:10 指令增加打包脚本并产出 flat 结构 .xpi；同时反馈 21:06 验收中关于 Firefox 真机验证的问题。
+
+**已做的事**：
+- 新增 `extension/pack.ps1`：按指令示例编写的 PowerShell 打包脚本（Compress-Archive，列文件保 flat）
+- 新增 `extension/pack.py`：Python zipfile 打包脚本（本机执行环境 PowerShell 子进程受限，Compress-Archive 静默失败，故补 Python 版保证可复现；arcname 用裸文件名确保 ZIP 根目录）
+- 产出 `claude-mcp-bridge-0.1.0.xpi`（仓库根目录，约 1 KB），**随本 commit 提交入库**
+
+**结果/验证**：
+- ZIP 条目实测：`['manifest.json', 'background.js', 'content.js']` —— 全部在根目录，flat 结构符合示例规范
+- `pack.py` 连跑两次（含删除重建）验证可复现
+- **关于 Firefox 真机验证的反馈**：我的执行环境无浏览器 GUI 操作能力，无法自行完成 about:debugging 临时加载验证。现用户已拿到 .xpi，可直接验证：`about:debugging` → 此 Firefox → 临时加载附加组件 → 选择 `claude-mcp-bridge-0.1.0.xpi` → 打开 claude.ai 页面看控制台是否有 `[claude-mcp-bridge] content script injected`。请协调者决定：等用户验证反馈，还是直接推进 WebSocket 连接阶段。
+
+**下一步打算**：
+- 等协调者指示：推进 WS 连接阶段，或等待真机验证结果
+
+**风险/疑问**：
+- PowerShell 环境备注：本机沙箱对 PowerShell 子进程（powershell.exe 嵌套、Add-Type、Compress-Archive）有限制，pack.ps1 逻辑正确但在本环境不可执行，需在正常终端跑；Python 版无此限制
+---
