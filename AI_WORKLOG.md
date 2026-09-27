@@ -730,3 +730,65 @@ HTTPS-Only 例外列表方向与本 wss 方案不冲突；wss 方案已实施且
   - 本条写入已按五步流程执行（读最新 → 拼接全文 → 整文件写入 → 用 commit stats 核对
     deletions≈0）。
 ---
+
+### [2026-09-27 23:52] 🟢已完成：wss 链路确认全通 + 定位真正根因是消息时序丢失（非网络问题）
+**目标**：核对用户补充的页面控制台 + background 控制台原始日志，确认握手成功的连接是否为扩展，
+以及 ping/pong 为何没交换。
+
+**结果/验证（用户原文日志，两处）**：
+1. **页面控制台**（claude.ai，两轮 F12 输出）：
+   ```
+   [claude-mcp-bridge] content script injected: https://claude.ai/new
+   [claude-mcp-bridge] ping via background: ▶DeadObject { }
+   [claude-mcp-bridge] content script injected: https://claude.ai/new
+   [claude-mcp-bridge] ping via background: Object { sent: false }
+   ```
+2. **background 控制台**（about:debugging → Claude MCP Bridge → Inspect）：
+   ```
+   [claude-mcp-bridge] connect() called, existing ws readyState: none
+   [claude-mcp-bridge] WS not open, drop: {"type":"ping"}   （×2，同一行折叠计数）
+   [claude-mcp-bridge] WS connected: wss://127.0.0.1:8765
+   ```
+
+**根因确认（不再是猜测）**：
+- **`WS connected: wss://127.0.0.1:8765` 已经出现**——wss 连接层（TLS 终结 + 证书信任 +
+  WebSocket 握手）**完全打通**，和 23:45 记录里 Server 端抓到的那次 `handshake OK` 对得上，
+  这条连接确实就是扩展 background.js 发起的。**wss 相关的所有排查到此可以正式收尾。**
+- 真正的问题是纯 JS 时序 bug：`content.js` 注入后立刻调用
+  `runtime.sendMessage({type:"bridge-ping"})`，此时 `background.js` 的 WebSocket 还在
+  "连接中"（还没到 `onopen`），`background.js` 里 `WS not open` 分支的逻辑是**直接丢弃**
+  这条 ping、不排队也不重试；等到 `onopen` 真正触发、`WS connected` 打出来的时候，
+  content script 那一次性的 ping 早已经被丢掉，也没有任何后续逻辑在"连接建立后"重新发送。
+  这完全解释了 Server 端"握手成功但全程没有 recv/send"的现象——**不是网络层断的，是
+  应用层消息在连接就绪前被丢弃，且没有补发机制**。
+- 第一轮页面日志里的 `DeadObject { }` 报错是另一件事（那次 background 的 event page 在
+  content script 尝试发消息时已被 Firefox 回收，属于旧版重连逻辑下的边缘情况），第二轮
+  `sent: false` 才是本次分析对应的主线证据；两轮共同指向同一个结论：**ping 没能在"连接
+  已就绪"这个时间窗口内被发送**。
+
+**本条状态标注为 🟢已完成**：第二阶段"打通扩展↔Server 的 WebSocket 连接"这个目标本身
+（网络层意义上）**已经验证达成**；后续的修复任务是一个新的、范围更小的子问题。
+
+- 决策/指示：
+  **下发新任务（第二阶段收尾修复，范围很小，只改 background.js）**：
+  1. 修改 `extension/background.js`：在 WS `onopen` 回调里，主动补发一次 `{"type":"ping"}`
+     （不依赖 content script 的时序），这样只要连接建立成功，Server 端必定会收到至少一次
+     ping 并回 pong，从而在 Server 终端和 background 控制台都能留下确凿的
+     `recv:`/`send:`/`pong received` 证据。
+  2. 同时把"连接未就绪时丢弃的消息"改为**简单排队**：用一个数组暂存 `WS not open` 时
+     没发出去的消息，`onopen` 触发后按顺序把队列里的消息依次发出去（不需要复杂的重试/
+     超时机制，先把"丢消息"这个明确的 bug 堵上即可）。
+  3. **不要**在这一步动 Server 端代码（`bridge_ws.py` 不用改），也不要碰 DOM 发送逻辑，
+     范围只限 `background.js`。
+  4. 改完后重新打包为 `claude-mcp-bridge-0.3.1.xpi`，本机跑一次 Server，刷新 claude.ai，
+     把 Server 终端出现的 `recv: {"type": "ping"}` → `send: {"type": "pong"}` 这一对，
+     以及 background 控制台的 `pong received`，作为 🟢 验证证据贴进下一条记录——这次
+     应该能拿到完整闭环，不会再是"握手成功但没有消息"这种半成品状态。
+
+- 备注：
+  - 本条写入已按五步流程执行（读最新 → 拼接全文 → 整文件写入 → 用 commit stats 核对
+    deletions≈0）。
+  - 这是本项目从 20:45 启动以来第一次把问题精确定位到几行代码级别的具体逻辑缺陷，之前
+    几轮关于代理/HTTPS-Only/Dev Edition 的排查方向虽然分别解决了各自阶段遇到的真实障碍，
+    但都不是这最后一步"消息丢失"的直接原因，特此记录以免误导后续排查思路。
+---
