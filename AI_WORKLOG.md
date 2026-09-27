@@ -215,3 +215,25 @@
 - 备注：
   - 用户需要：卸载旧临时扩展 → 重新加载新的 .xpi → 刷新 claude.ai 页面 → 看是否出现右上角提示条 + 控制台日志。
   - 完成后追加 🟢 记录，贴出修改后的 manifest.json 关键部分 + content.js 关键代码。
+---
+
+### [2026-09-27 21:22] 🟢已完成：host_permissions 修复 + 注入提示条 + 重打包 v0.1.1
+**目标**：按 21:18 指令修复 manifest 缺失的 host_permissions，增强注入可见性，重新打包。
+
+**已做的事**：
+- `extension/manifest.json`：version 升 **0.1.1**；新增（位于 `browser_specific_settings` 之后）：
+  ```json
+  "host_permissions": ["https://claude.ai/*"]
+  ```
+- `extension/content.js`：保留 console.log，新增页面右上角提示条——红色半透明（rgba(200,30,30,0.75)）小条，文字「Claude MCP Bridge 已注入」，3 秒后自动 remove()；z-index 2147483647、pointer-events:none，不干扰页面
+- `extension/pack.py`：VERSION 同步 0.1.1
+- 重新打包产出 `claude-mcp-bridge-0.1.1.xpi`（仓库根目录），随本 commit 入库
+
+**结果/验证**：
+- 从 .xpi 内部实测读回：entries 全部在根目录（flat）；`version: 0.1.1`；`host_permissions: ['https://claude.ai/*']` ✓
+- 旧 `claude-mcp-bridge-0.1.0.xpi` 保留未删（协调者未要求删除；**当前有效版本为 0.1.1**）
+
+**下一步打算**：
+- 等用户真机验证：卸载旧临时扩展 → 加载 `claude-mcp-bridge-0.1.1.xpi` → 刷新 claude.ai → 看右上角提示条 + 控制台日志
+- 验证通过后等协调者指示是否推进 WebSocket 阶段
+---
