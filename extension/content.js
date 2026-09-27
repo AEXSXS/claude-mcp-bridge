@@ -177,3 +177,19 @@ if (typeof browser !== "undefined" && browser.runtime && browser.runtime.onMessa
     return Promise.resolve(handlePageAction(msg.action, msg.payload || {}));
   });
 }
+
+// 心跳保活：event page 空闲会被 Firefox 回收（WS 随之断开，服务端广播无人收）。
+// 页面开着时每 20s 发一次 keepalive 重置空闲计时；background 若被重建，
+// sendMessage 失败后下一轮自然恢复。
+if (typeof browser !== "undefined" && browser.runtime && browser.runtime.sendMessage) {
+  setInterval(() => {
+    browser.runtime
+      .sendMessage({ type: "bridge-keepalive" })
+      .then((res) => {
+        if (res?.ws !== "OPEN") {
+          console.log("[claude-mcp-bridge] keepalive: background ws =", res?.ws);
+        }
+      })
+      .catch((e) => console.warn("[claude-mcp-bridge] keepalive failed:", e.message || e));
+  }, 20000);
+}

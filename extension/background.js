@@ -105,6 +105,13 @@ browser.runtime.onMessage.addListener((msg) => {
   if (msg && msg.type === "bridge-echo") {
     return Promise.resolve({ sent: send({ type: "echo", text: msg.text || "" }) });
   }
+  if (msg && msg.type === "bridge-keepalive") {
+    // content 每 20s 戳一次，重置 event page 空闲计时，防止 background 被回收
+    return Promise.resolve({
+      alive: true,
+      ws: ws ? READY_STATE[ws.readyState] : "none",
+    });
+  }
   return undefined;
 });
 
