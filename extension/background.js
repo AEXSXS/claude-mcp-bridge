@@ -16,7 +16,15 @@ function scheduleReconnect(reason) {
   }, RECONNECT_MS);
 }
 
+const READY_STATE = ["CONNECTING", "OPEN", "CLOSING", "CLOSED"];
+
 function connect() {
+  const existing = ws ? READY_STATE[ws.readyState] : "none";
+  console.log(`[claude-mcp-bridge] connect() called, existing ws readyState: ${existing}`);
+  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+    console.warn("[claude-mcp-bridge] already have an active/connecting ws, skip duplicate connect");
+    return;
+  }
   try {
     ws = new WebSocket(WS_URL);
   } catch (e) {

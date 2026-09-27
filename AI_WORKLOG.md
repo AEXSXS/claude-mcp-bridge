@@ -521,3 +521,42 @@
     那问题可能出在 `websockets` 库版本兼容性上，需要另开方向；如果显示"收到的是空字节
     或明显被截断/乱码的内容"，才真正坐实是网络中间层（代理/其他软件）在搞事。
 ---
+
+### [2026-09-27 22:50] 🔵进行中：代码级诊断落实完成，**发现关键证据：来的是 TLS ClientHello**
+**目标**：按 22:05 指令落实原始字节诊断，定位 "did not receive a valid HTTP request" 根因。
+
+**已做的事**：
+- 重写 `mcp_server/bridge_ws.py`（websockets 17.x 的 `process_request` 拿不到解析失败前的原始字节，故按指令允许的方案改为**字节窥探中继**）：
+  - 对外仍监听 `127.0.0.1:8765`（扩展无感），前面加一层 asyncio 中继：打印每个新连接的 `remote_address` + 第一段原始字节（repr，含 0 字节/超时情形），字节原样透传给内部 `websockets.serve`（`127.0.0.1:8766`），正常握手不受影响
+  - 同时开启 `websockets` 库 logger（INFO）
+- `extension/background.js`：`connect()` 前打印现有 ws readyState，OPEN/CONNECTING 时跳过重复连接（21:46 要求）
+- 版本升 **0.2.1**，`claude-mcp-bridge-0.2.1.xpi` 已打包入库（本 commit）
+
+**结果/验证（本机实测，服务端日志原文节选）**：
+1. 中继链路本身工作正常——正常 websockets 客户端连 8765：
+   ```
+   [diag] ('127.0.0.1', 3900) first 264 byte(s): b'GET / HTTP/1.1\r\nHost: 127.0.0.1:8765\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: Ll8o1Ue20/vPc9Liwpseyw==\r\n...'
+   [bridge-ws] handshake OK, client: ('127.0.0.1', 3901)
+   [bridge-ws] recv: {"type": "ping"} → send: {"type": "pong"}
+   ```
+2. 坏字节模拟（socket 发 TLS 头）：`first 10 byte(s): b'\x16\x03\x01\x00\x05\x01\x00\x00\x01\x00'` ✓ 抓到了
+3. **关键发现**：服务启动后**未做任何页面操作**，`127.0.0.1` 就持续有连接打进来，首段字节全部是 **TLS ClientHello**：
+   ```
+   [diag] ('127.0.0.1', 3823) first 512 byte(s): b'\x16\x03\x01\x07H\x01\x00\x07D\x03\x03...'
+   （ALPN 扩展: h2, http/1.1 —— 浏览器 TLS 栈特征；连接以约 3 秒间隔反复出现，与 background 重连节奏一致）
+   ```
+   我用 websockets 客户端自测发生在第 3 个连接之后，前后这些 TLS 连接都不是我发的。
+
+**初步结论（待用户对照实验确认）**：
+- 根因既不是"空字节"也不是"代理截断成乱码"，而是**客户端在用 TLS（wss://）连明文 ws 服务**——即 Firefox 把扩展发起的 `ws://127.0.0.1:8765` 自动升级成了 `wss://`。最大嫌疑是 **Firefox 的 HTTPS-Only 模式**（约 preferences → 隐私与安全 → HTTPS-Only 模式），或其他 ws→wss 升级策略。这也解释了为什么改 FlClash/Firefox 代理绕过两轮都无效。
+- 请用户做两个快速验证（任一命中即可确认）：
+  1. Firefox 设置里检查 HTTPS-Only 模式是否开启；若开着，关掉（或加例外）后刷新 claude.ai，看 Server 终端是否出现 `handshake OK`；
+  2. 完全关闭 Firefox，观察 Server 终端 TLS 连接是否停止（确认来源是扩展而非其他进程）。
+- 若确认是 HTTPS-Only，修复选项：关模式/加本地豁免（用户侧）；或服务端上 wss 自签证书（代码侧，工作量大，不优先）。
+
+**下一步打算**：
+- 等用户对照实验结果 + 协调者定夺修复方向；诊断代码保留不撤
+
+**风险/疑问**：
+- 若用户 HTTPS-Only 是关着的，则 TLS 来源需要重新归因（可能是别的进程在扫），届时可用 0.2.1 的 background 日志（`connect() called, existing ws readyState`）交叉对照
+---
