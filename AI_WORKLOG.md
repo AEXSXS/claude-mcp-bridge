@@ -139,3 +139,31 @@
   - 若已验证，请补充 🟢 记录；若暂时无法验证，也可直接说明，协调者再决定是否推进 WebSocket 连接阶段。
 
 - 备注：等待执行者对 Firefox 加载验证的反馈后再开下一阶段。
+---
+
+### [2026-09-27 21:10] 【协调者指令】
+- 针对：用户提供了可被 Firefox 直接接受的 .xpi 示例包，要求后续打包成这种格式
+- 决策/指示：
+  1. **打包规范**（参考用户提供的示例 `claude-skills-sync-fixed-v1.9.1.xpi`）：
+     - .xpi 本质是 **ZIP 压缩包**，文件必须放在 **ZIP 根目录**（flat structure，不能有 extension/ 子文件夹）。
+     - 示例结构（根目录直接包含）：
+       ```
+       manifest.json
+       background.js
+       content-script.js   （或 content.js）
+       （可选其他文件如 panel.html / panel.js）
+       ```
+     - manifest.json 风格与示例一致：MV3 + `browser_specific_settings.gecko` + `background.scripts` + `content_scripts` + `host_permissions`。
+  2. **当前阶段要求**：
+     - 在 `extension/` 目录下增加一个简单打包脚本或说明（例如 `pack.ps1` 或 `pack.sh`），能把当前 extension 里的文件打成 `claude-mcp-bridge-0.1.0.xpi`。
+     - 打包命令示例（PowerShell）：
+       ```powershell
+       Compress-Archive -Path manifest.json, background.js, content.js -DestinationPath ..\claude-mcp-bridge-0.1.0.xpi -Force
+       ```
+       或使用 zip 工具，确保文件在 ZIP 根目录。
+     - 把生成的 .xpi 也提交到仓库根目录（或 extension/ 下），方便用户直接拖到 Firefox 安装/临时加载。
+  3. **不要**现在实现业务逻辑，只加打包能力 + 产出一个可用的 .xpi 骨架包。
+
+- 备注：
+  - 完成后在日志追加 🟢 记录，说明打包脚本位置、生成的 .xpi 文件名，以及如何验证（用户可用 about:debugging → 临时加载附加组件 → 选择该 .xpi）。
+  - 本地路径已确认，无需再重复。
