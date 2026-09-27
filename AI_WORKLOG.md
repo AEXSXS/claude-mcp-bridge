@@ -824,4 +824,3 @@ CONNECTING，旧 send() 直接丢弃且无人重发——所以握手成功却�
 **第二阶段（WebSocket 桥接）端到端闭环确认跑通**。协调者指令的 3 项修复要求
 （入队冲刷/onopen 补发/不改 server）均已在本 commit 落地，其中 onopen 自发 ping
 为额外加固，使即使 content 消息全丢也能完成链路验证。
->>>>>>> 85b0c02 (fix: WS 未就绪消息入队+onopen 冲刷+连接即 ping；content 失败重试, v0.3.1)
