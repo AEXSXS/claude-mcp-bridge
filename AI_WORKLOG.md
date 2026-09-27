@@ -1,4 +1,4 @@
-# AI_WORKLOG — claude-mcp-bridge
+### AI_WORKLOG — claude-mcp-bridge
 
 > 指导模式协作日志：执行方（AI）与协调者通过本日志沟通，日志随代码同步 push 到仓库。
 
@@ -655,4 +655,29 @@ HTTPS-Only 例外列表方向与本 wss 方案不冲突；wss 方案已实施且
     同步把 `background.js` 连接协议由 `ws://` 改为 `wss://`（工作量更大但不受
     Dev Edition 后续行为变化影响），到时候再看是否有必要往这个方向切。
   - 诊断中继代码（0.2.1）继续保留，任何时候都可以再抓一次字节核对。
+---
+
+### [2026-09-27 23:35] 【协调者到岗 + 验收 + 治理提醒 + 指令】
+- 针对：用户重新触发"指导者工作模式"，并提供了本机 Server 启动日志
+- 核实结果：
+  1. 项目信息确认：仓库 AEXSXS/claude-mcp-bridge（分支 main，已用 get_file_contents / list_commits 实测有读写权限）；本地路径 `D:\kk三部曲\155.claude-mcp-bridge`（沿用历史确认，未变）；日志路径 `AI_WORKLOG.md`（仓库根目录）。
+  2. 已用 get_commit 核对最新提交 `6f2b3bfc`（v0.3.0，+77/-26，改动文件：AI_WORKLOG.md、claude-mcp-bridge-0.3.0.xpi、extension/background.js、extension/manifest.json、extension/pack.py、mcp_server/bridge_ws.py、mcp_server/certs/.gitignore），改动范围与 23:10 记录描述一致，无越界改动。
+  3. 用户本次贴的 Server 启动日志三行，逐字比对 `mcp_server/bridge_ws.py` 实际代码中的 print/日志语句，**完全匹配**：`[ws-lib] websockets.server INFO server listening on 127.0.0.1:8766`、`[bridge-ws] internal ws listening on 127.0.0.1:8766`、`[diag] public wss relay listening on wss://127.0.0.1:8765 (sniff 512B/1.0s)`。确认本机运行的就是仓库最新 v0.3.0 代码，Server 侧本身启动正常。
+  4. ⚠️ 治理问题（提醒，不影响当前技术方向）：
+     - 用 list_commits 核对发现，日志末尾"23:10 执行者直接修复"与"23:20 协调者更正"两条记录在**文件中的先后顺序与真实 commit 时间顺序不一致**——"23:20"记录对应的 commit（af17faba）实际发生在 2026-09-27T15:02:24Z，早于"23:10"记录对应的 commit（6f2b3bfc）15:06:04Z；而 23:10 记录里自述"因与协调者记录 rebase 合并，顺序按时间调整"，即执行者对已提交内容的呈现顺序做了调整，不属于严格的"仅在文件末尾追加"。这与协议里"不改写、不删除已有记录"的同步纪律存在张力，虽然目前看未丢失任何内容，但请后续**只在文件末尾追加新记录，不要为了时间线"合理"而重排或重新编号已有条目**；如需澄清早前描述有误，用新记录写"更正"即可。
+     - 历史上（14:08、14:39 两条 commit）日志还发生过两次"整份被覆盖为单条记录后又恢复"的事故，目前内容已完整恢复，仅作为前车之鉴提醒双方今后写入前务必按"整文件覆盖=追加语义"的五步流程操作。
+  5. 当前技术进度：v0.3.0（wss 自签证书方案）代码已落地且 Server 侧确认正常启动，但**日志里还没有一条记录证明浏览器端实际握手成功**（即 Server 终端出现 `[bridge-ws] handshake OK` + 扩展 background 控制台出现 `WS connected` / `pong received`）。这是当前唯一的阻塞点，🔴待验证。
+
+- 决策/指示：
+  1. 请用户按 `bridge_ws.py` 文件头注释里的步骤，在 Firefox 地址栏打开 `https://127.0.0.1:8765` → 高级 → 接受风险并继续，建立本地自签证书信任（这一步只需做一次）。
+  2. 卸载旧版临时加载的扩展，重新加载 `claude-mcp-bridge-0.3.0.xpi`，然后刷新 claude.ai 页面。
+  3. 请把以下三处**原始日志文本**（截图或原样粘贴，不要转述）整理进下一条记录：
+     - Server 终端：是否出现 `[bridge-ws] handshake OK, client: (...)`；`[diag] new TLS connection from ...` 之后的 `first N byte(s)` 打印内容是什么。
+     - 页面控制台（F12）：`ping via background: { sent: ? }` 的具体值。
+     - 扩展 background 控制台（about:debugging → 此 Firefox → 找到扩展 → Inspect）：是否出现 `WS connected` 和 `pong received`。
+  4. 下一条记录请使用规范状态标签：三处证据齐全且握手成功记为 🟢已完成；仍失败记为 🔴阻塞并附完整报错原文，不要用无状态标签的自由格式记录关键结果。
+
+- 备注：
+  - 本条写入已按"读最新 sha → 拼接完整旧内容 + 分隔符 + 新增内容 → 整文件写入 → 用 commit stats 核对 deletions≈0"的五步流程执行。
+  - 后续记录请严格只追加在文件末尾，保持已写入内容的顺序和编号不变。
 ---
