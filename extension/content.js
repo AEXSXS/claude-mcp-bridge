@@ -79,7 +79,7 @@ function clickSend() {
 }
 
 // 抓最后一条 Claude 回复。选择器按优先级尝试，DOM 变版时兜底 article
-function getLastReply() {
+function readLastReply() {
   const sels = [
     '[data-testid="assistant-message"]',
     "article .font-claude-message",
@@ -91,17 +91,46 @@ function getLastReply() {
     if (nodes.length) {
       const last = nodes[nodes.length - 1];
       const text = (last.innerText || "").trim();
-      if (text) {
-        return {
-          selector: sel,
-          count: nodes.length,
-          text: text.slice(0, 4000),
-          truncated: text.length > 4000,
-        };
-      }
+      if (text) return { selector: sel, count: nodes.length, text };
     }
   }
-  throw new Error("no reply text found (page may have no conversation yet)");
+  return null;
+}
+
+function getLastReply() {
+  const r = readLastReply();
+  if (!r) throw new Error("no reply text found (page may have no conversation yet)");
+  return {
+    selector: r.selector,
+    count: r.count,
+    text: r.text.slice(0, 4000),
+    truncated: r.text.length > 4000,
+  };
+}
+
+// 等 Claude 生成完：轮询最后一条回复文本，连续 3 次采样不变且与发送前基线
+// 不同（说明出现了新回复）即认为完成。不依赖 Stop 按钮等易变 UI 特征。
+async function waitForReply(prevText, timeoutMs = 150000) {
+  const start = Date.now();
+  let last = "";
+  let stable = 0;
+  while (Date.now() - start < timeoutMs) {
+    await new Promise((r) => setTimeout(r, 1200));
+    let cur = "";
+    try {
+      cur = readLastReply()?.text || "";
+    } catch (_) {
+      cur = "";
+    }
+    if (cur && cur === last) {
+      stable++;
+      if (stable >= 3 && cur !== prevText) return cur;
+    } else {
+      stable = 0;
+    }
+    last = cur;
+  }
+  throw new Error(`timeout waiting for reply (${timeoutMs}ms)`);
 }
 
 async function handlePageAction(action, payload) {
@@ -121,9 +150,14 @@ async function handlePageAction(action, payload) {
     } else if (action === "click_send") {
       data = clickSend();
     } else if (action === "send_prompt") {
+      const prevText = readLastReply()?.text || ""; // 基线：发送前的最后一条回复
       data = fillPrompt(String(payload.text || ""));
       await new Promise((r) => setTimeout(r, 350)); // 等 React 状态刷新启用发送钮
       data.send = clickSend();
+      if (payload.wait) {
+        const reply = await waitForReply(prevText, Number(payload.timeout_ms) || 150000);
+        data.reply = { text: reply.slice(0, 4000), truncated: reply.length > 4000 };
+      }
     } else if (action === "get_reply") {
       data = getLastReply();
     } else {

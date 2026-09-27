@@ -142,6 +142,7 @@ async def ws_handler(ws, hub: Hub) -> None:
                 await ws.send(json.dumps({"type": "echo_reply", "text": msg.get("text", "")}))
             elif t == "page_cmd":
                 cmd_id = msg.get("id") or uuid.uuid4().hex[:8]
+                req_timeout = min(float(msg.get("timeout", 30)), 300)  # 等生成最长 5 分钟
                 fut = asyncio.get_running_loop().create_future()
                 hub.pending[cmd_id] = fut
                 await hub.broadcast(json.dumps(
@@ -149,10 +150,10 @@ async def ws_handler(ws, hub: Hub) -> None:
                      "action": msg.get("action"), "payload": msg.get("payload", {})},
                     ensure_ascii=False))
                 try:
-                    result = await asyncio.wait_for(fut, timeout=30)
+                    result = await asyncio.wait_for(fut, timeout=req_timeout)
                 except asyncio.TimeoutError:
                     result = {"type": "page_result", "id": cmd_id,
-                              "ok": False, "error": "timeout (30s), no page_result"}
+                              "ok": False, "error": f"timeout ({req_timeout:.0f}s), no page_result"}
                 finally:
                     hub.pending.pop(cmd_id, None)
                 out = json.dumps(result, ensure_ascii=False)

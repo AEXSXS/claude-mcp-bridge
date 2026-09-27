@@ -28,7 +28,8 @@ mcp = MCPServer("claude-mcp-bridge")
 async def page_cmd(action: str, payload: dict | None = None, timeout: float = PAGE_TIMEOUT) -> str:
     """发 page_cmd 到桥接服务，等 page_result。返回可读的结果文本。"""
     cmd_id = uuid.uuid4().hex[:8]
-    req = {"type": "page_cmd", "id": cmd_id, "action": action, "payload": payload or {}}
+    req = {"type": "page_cmd", "id": cmd_id, "action": action,
+           "payload": payload or {}, "timeout": timeout}
     async with websockets.connect(INTERNAL_WS, max_size=2**22) as ws:
         await ws.send(json.dumps(req))
         deadline = asyncio.get_event_loop().time() + timeout
@@ -63,10 +64,15 @@ def page_info() -> str:
 
 
 @mcp.tool()
-def send_prompt(text: str) -> str:
-    """向 claude.ai 输入框填入文本并点击发送。"""
+def send_prompt(text: str, wait: bool = True, timeout_s: int = 150) -> str:
+    """向 claude.ai 输入框填入文本并点击发送。
+
+    wait=True（默认）时等 Claude 回复生成完成并直接返回回复文本；
+    wait=False 只确认发送成功。timeout_s 是等回复的秒数上限。
+    """
+    payload = {"text": text, "wait": wait, "timeout_ms": timeout_s * 1000}
     try:
-        return asyncio.run(page_cmd("send_prompt", {"text": text}))
+        return asyncio.run(page_cmd("send_prompt", payload, timeout=max(PAGE_TIMEOUT, timeout_s + 30)))
     except OSError as e:
         return f"send_prompt FAILED: 连不上桥接服务 {INTERNAL_WS}（{e}），请先启动 bridge_ws.py"
 

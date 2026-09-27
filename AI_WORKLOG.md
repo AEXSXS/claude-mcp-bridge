@@ -852,3 +852,22 @@ CONNECTING，旧 send() 直接丢弃且无人重发——所以握手成功却�
 - **真机验证（待用户）**：重启 bridge_ws.py（正式 8765/8766，**必须用新版**）
   → 加载 claude-mcp-bridge-0.4.0.xpi → 刷新 claude.ai → 用 MCP 客户端调
   page_info / send_prompt / get_reply 验证真实 DOM
+
+### [2026-09-28 00:25] 执行者补齐功能闭环：发送→等生成→取回完整回复（v0.5.0）
+用户指示暂不推送，先把功能做完。
+- **content.js**：新增 `waitForReply(prevText, timeoutMs)`——轮询最后一条回复文本，
+  连续 3 次采样（约 3.6s）不变且与发送前基线不同即认为生成完成；
+  不依赖 Stop 按钮等易变 UI 特征。`send_prompt` 支持 `payload.wait`：
+  填字→发送→等完成→直接返回回复文本（截 4000 字）
+- **bridge_ws.py**：服务端 page_cmd 超时改为按请求里的 timeout 字段
+  （默认 30s，封顶 300s），否则等生成会被 30s 硬超时杀掉
+- **server.py**：`send_prompt(text, wait=True, timeout_s=150)`——默认等完整回复；
+  客户端等待上限 = max(30, timeout_s+30)
+- **实测**（假扩展模拟 4s 生成延迟）：
+  - send+wait：返回完整回复文本 ✓
+  - send nowait：立即返回发送确认 ✓
+- **本地 commit 未推送**（用户指示）：832446b（v0.4.0 基础）+ 本条，网络恢复后一起推
+- **功能闭环现状**：page_info / send_prompt(wait) / get_reply 已齐，
+  本地 AI 经 MCP 即可「发问题→拿 Claude 回复」。剩余真机验证项：
+  ①ProseMirror 填字是否触发 React 状态（发送钮解禁）
+  ②回复文本稳定性检测在真实流式输出下的表现
