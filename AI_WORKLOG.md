@@ -681,3 +681,52 @@ HTTPS-Only 例外列表方向与本 wss 方案不冲突；wss 方案已实施且
   - 本条写入已按"读最新 sha → 拼接完整旧内容 + 分隔符 + 新增内容 → 整文件写入 → 用 commit stats 核对 deletions≈0"的五步流程执行。
   - 后续记录请严格只追加在文件末尾，保持已写入内容的顺序和编号不变。
 ---
+
+### [2026-09-27 23:45] 【协调者：证书信任已通过 + 抓到第一次握手成功，但缺关键佐证日志】
+- 针对：用户提供的最新 Server 终端完整日志（未做代码改动，本条是纯分析）
+- 核实结果：
+  1. **证书信任已完成**：日志里浏览器直接访问 `https://127.0.0.1:8765` 产生的普通页面 GET
+     （`Accept: text/html,application/xhtml+xml...`）都能走到 TLS 层被正常解析（`connection
+     rejected (426 Upgrade Required)`，而不是 TLS 握手层面报错），说明自签证书例外已生效。
+  2. **抓到本项目第一次真正的 WS 握手成功**：
+     ```
+     [diag] new TLS connection from ('127.0.0.1', 8135)
+     [diag] ('127.0.0.1', 8135) first 512 byte(s): b'GET / HTTP/1.1\r\n...Accept: */*\r\nAccept-Language: zh-CN...'
+     [ws-lib] websockets.server INFO connection open
+     [bridge-ws] handshake OK, client: ('127.0.0.1', 8136)
+     [diag] connection closed: ('127.0.0.1', 8135)
+     [bridge-ws] client removed: ('127.0.0.1', 8136)
+     ```
+     这条请求头是 `Accept: */*`（不是浏览器页面导航的 `text/html,...`），特征上更像
+     `new WebSocket(...)` 发起的请求，而不是用户在地址栏敲页面——**大概率就是扩展
+     background.js 发起并握手成功的那次**。这是 wss 链路第一次被证实端到端打通。
+  3. **异常点**：握手成功后立刻 `connection closed`，日志里全程没有出现
+     `[bridge-ws] recv:` / `send:`，也就是说没有任何 ping/echo 消息被交换就断开了。
+     可能原因（未确认，需要下面的证据排除）：
+     - 页面刷新导致旧 `background.js` 的 WS 对象被中断（Firefox event page 卸载/重建时序）；
+     - content script 的 `runtime.sendMessage({type:"bridge-ping"})` 触发早于 `onopen`，
+       ping 没真正发出去就被 background 关闭/重连覆盖；
+     - 也可能这条连接根本不是扩展发的（虽然特征像），是别的什么东西。
+  4. 其余几条连接（8096/8098/8102/8104/13540）都是标准浏览器页面/图标 GET
+     （`Accept: text/html...` / `image/avif,...`），是之前"打开 https://127.0.0.1:8765
+     接受证书风险"那步操作留下的，和扩展无关，正常现象，忽略。
+
+- 决策/指示：
+  **本次不需要改代码**，需要用户把之前要的另外两处日志补上，才能把"握手成功的是不是
+  扩展本身"以及"ping/pong 到底通没通"钉死：
+  1. **页面控制台**（打开 claude.ai，F12 → 控制台）：完整贴出来，尤其是
+     `ping via background: { sent: ? }` 这一行的具体值，以及注入相关的日志。
+  2. **扩展 background 控制台**（about:debugging → 此 Firefox → 找到 Claude MCP Bridge
+     → Inspect，会弹出单独的开发者工具窗口）：完整贴出来，重点看有没有
+     `WS connected`、有没有 `pong received`、有没有报错。
+  3. 如果这两处日志显示 `sent: true` 且 background 出现 `WS connected` + `pong
+     received`，说明 wss 全链路（TLS + WS 握手 + 业务消息）已经完全打通，第二阶段可以
+     正式验收；如果 `sent` 是 true 但没等到 `pong received`，或者 background 压根没连上，
+     则需要执行者再排查一次"握手成功后为什么立刻断开、没来得及发消息"这个新问题（大概率
+     是 event page 生命周期或重连时序问题，不是 wss 本身的锅）。
+
+- 备注：
+  - 本条为分析记录，未修改代码/证书/协议，只是核对现有证据并指出还缺什么。
+  - 本条写入已按五步流程执行（读最新 → 拼接全文 → 整文件写入 → 用 commit stats 核对
+    deletions≈0）。
+---
