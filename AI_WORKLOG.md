@@ -824,3 +824,31 @@ CONNECTING，旧 send() 直接丢弃且无人重发——所以握手成功却�
 **第二阶段（WebSocket 桥接）端到端闭环确认跑通**。协调者指令的 3 项修复要求
 （入队冲刷/onopen 补发/不改 server）均已在本 commit 落地，其中 onopen 自发 ping
 为额外加固，使即使 content 消息全丢也能完成链路验证。
+
+### [2026-09-28 00:20] 执行者实施第三阶段：页面 DOM 交互（v0.4.0）
+用户贴来 claude.ai/new 的页面结构快照（59 元素），确认关键选择器后直接实施：
+- **协议扩展**：新增 `page_cmd`（id + action + payload，服务端广播给全部连接、
+  30s 超时兜底）与 `page_result`（按 id 匹配 pending 请求完成往返）
+- **mcp_server/server.py**：新增 MCP 工具 `page_info` / `send_prompt(text)` /
+  `get_reply`——本进程作 ws 客户端连内部端口 8766 发 page_cmd 等结果；
+  内部地址可用环境变量 BRIDGE_WS_URL 覆盖（测试用）
+- **extension/background.js**：收 page_cmd → tabs.query 找 claude.ai 标签页
+  （优先活动页）→ sendMessage 给 content → 回 page_result（找不到页/失败也回）
+- **extension/content.js**：动作实现
+  - page_info：url/title/readyState/输入框与发送钮存在性
+  - fill_prompt：ProseMirror 填字（execCommand insertText，失败退 paste 事件，
+    双重校验）
+  - click_send：`[data-testid=chat-input-send]`，disabled 直接报错
+  - send_prompt：填字 + 350ms 等 React 刷新 + 点发送
+  - get_reply：assistant-message / .font-claude-message / article 多选择器兜底，
+    取最后一条，截 4000 字
+- **manifest**：加 `tabs` 权限（background 按 URL 过滤 tabs.query 需要）
+- **实测**（假扩展模拟扩展侧）：
+  - MCP stdio 全链路：list_tools 4 个、page_info 返回页面状态、send_prompt
+    返回 filled+clicked，page_result 按 id 正确匹配
+  - 无扩展时超时兜底：客户端 wait_for 抛 TimeoutError 已接住，返回友好提示
+  - 踩坑：18765/18766 被 v0.3.0 时代残留的测试 python 进程（PID 15380）
+    占用致 bind 失败两次，taskkill 后恢复——后台任务 TaskStop 后要 netstat 复核
+- **真机验证（待用户）**：重启 bridge_ws.py（正式 8765/8766，**必须用新版**）
+  → 加载 claude-mcp-bridge-0.4.0.xpi → 刷新 claude.ai → 用 MCP 客户端调
+  page_info / send_prompt / get_reply 验证真实 DOM

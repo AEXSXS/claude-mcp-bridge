@@ -1,4 +1,4 @@
-"""claude-mcp-bridge WebSocket bridge (Phase 2, wss)
+"""claude-mcp-bridge WebSocket bridge (Phase 3, wss)
 
 为什么是 wss：WebExtension 默认 CSP 含 upgrade-insecure-requests，Firefox/Chrome
 会把扩展 background 页面里的 ws:// 强制升级为 wss://，明文 ws 永远收不到合法握手。
@@ -6,6 +6,7 @@
 
 架构：
   扩展 --wss://127.0.0.1:8765--> [TLS 中继(窥探日志)] --ws--> 127.0.0.1:8766 [websockets]
+  MCP server.py / 其他客户端 --ws--> 127.0.0.1:8766（同一内部端口）
 
 首次使用需在 Firefox 给证书加例外：浏览器打开 https://127.0.0.1:8765
 -> 高级 -> 接受风险并继续（例外入库后 wss 连接同样生效）。
@@ -13,9 +14,12 @@
 协议（JSON text frame）：
   {"type": "ping"}                -> {"type": "pong"}
   {"type": "echo", "text": "..."} -> {"type": "echo_reply", "text": "..."}
+  {"type": "page_cmd", "id": "...", "action": "...", "payload": {...}}
+      -> 广播给所有连接（扩展收到后转发 claude.ai 标签页执行）
+  {"type": "page_result", "id": "...", "ok": true, "data": {...}}
+      -> 匹配 pending 的 page_cmd，完成一次请求-响应往返
   其他                            -> {"type": "error", "error": "..."}
 
-MCP stdio 入口见 server.py，两者为独立进程。
 启动：python bridge_ws.py [--port 8765] [--internal-port 8766]
 """
 
@@ -24,6 +28,7 @@ import asyncio
 import json
 import logging
 import ssl
+import uuid
 from pathlib import Path
 
 import websockets
@@ -37,6 +42,21 @@ def build_ssl_context() -> ssl.SSLContext:
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     ctx.load_cert_chain(CERT_DIR / "server.crt", CERT_DIR / "server.key")
     return ctx
+
+
+class Hub:
+    """连接注册表 + page_cmd 请求-响应匹配。"""
+
+    def __init__(self) -> None:
+        self.clients: set = set()
+        self.pending: dict = {}  # id -> asyncio.Future
+
+    async def broadcast(self, text: str) -> None:
+        for c in list(self.clients):
+            try:
+                await c.send(text)
+            except websockets.ConnectionClosed:
+                pass
 
 
 async def relay(
@@ -100,9 +120,10 @@ async def relay(
     print(f"[diag] connection closed: {peer}", flush=True)
 
 
-async def ws_handler(ws) -> None:
+async def ws_handler(ws, hub: Hub) -> None:
     peer = ws.remote_address
-    print(f"[bridge-ws] handshake OK, client: {peer}", flush=True)
+    hub.clients.add(ws)
+    print(f"[bridge-ws] handshake OK, client: {peer} (total {len(hub.clients)})", flush=True)
     try:
         async for raw in ws:
             print(f"[bridge-ws] recv: {raw}", flush=True)
@@ -110,29 +131,56 @@ async def ws_handler(ws) -> None:
                 msg = json.loads(raw)
             except json.JSONDecodeError:
                 reply = {"type": "error", "error": "invalid json"}
+                print(f"[bridge-ws] send: {json.dumps(reply)}", flush=True)
+                await ws.send(json.dumps(reply))
+                continue
+
+            t = msg.get("type") if isinstance(msg, dict) else None
+            if t == "ping":
+                await ws.send(json.dumps({"type": "pong"}))
+            elif t == "echo":
+                await ws.send(json.dumps({"type": "echo_reply", "text": msg.get("text", "")}))
+            elif t == "page_cmd":
+                cmd_id = msg.get("id") or uuid.uuid4().hex[:8]
+                fut = asyncio.get_running_loop().create_future()
+                hub.pending[cmd_id] = fut
+                await hub.broadcast(json.dumps(
+                    {"type": "page_cmd", "id": cmd_id,
+                     "action": msg.get("action"), "payload": msg.get("payload", {})},
+                    ensure_ascii=False))
+                try:
+                    result = await asyncio.wait_for(fut, timeout=30)
+                except asyncio.TimeoutError:
+                    result = {"type": "page_result", "id": cmd_id,
+                              "ok": False, "error": "timeout (30s), no page_result"}
+                finally:
+                    hub.pending.pop(cmd_id, None)
+                out = json.dumps(result, ensure_ascii=False)
+                print(f"[bridge-ws] send: {out}", flush=True)
+                await ws.send(out)
+            elif t == "page_result":
+                fut = hub.pending.get(msg.get("id"))
+                if fut and not fut.done():
+                    fut.set_result(msg)
+                    print(f"[bridge-ws] page_result matched: {msg.get('id')}", flush=True)
             else:
-                t = msg.get("type") if isinstance(msg, dict) else None
-                if t == "ping":
-                    reply = {"type": "pong"}
-                elif t == "echo":
-                    reply = {"type": "echo_reply", "text": msg.get("text", "")}
-                else:
-                    reply = {"type": "error", "error": f"unknown type: {t}"}
-            out = json.dumps(reply, ensure_ascii=False)
-            print(f"[bridge-ws] send: {out}", flush=True)
-            await ws.send(out)
+                reply = {"type": "error", "error": f"unknown type: {t}"}
+                print(f"[bridge-ws] send: {json.dumps(reply)}", flush=True)
+                await ws.send(json.dumps(reply))
     except websockets.ConnectionClosed as e:
         print(f"[bridge-ws] client closed: {peer} ({e})", flush=True)
     finally:
-        print(f"[bridge-ws] client removed: {peer}", flush=True)
+        hub.clients.discard(ws)
+        print(f"[bridge-ws] client removed: {peer} (total {len(hub.clients)})", flush=True)
 
 
 async def main(port: int, internal_port: int) -> None:
     logging.basicConfig(level=logging.INFO, format="[ws-lib] %(name)s %(levelname)s %(message)s")
     ssl_ctx = build_ssl_context()
+    hub = Hub()
 
     async def serve_ws() -> None:
-        async with websockets.serve(ws_handler, "127.0.0.1", internal_port):
+        async with websockets.serve(lambda ws: ws_handler(ws, hub), "127.0.0.1", internal_port):
             print(f"[bridge-ws] internal ws listening on 127.0.0.1:{internal_port}", flush=True)
             await asyncio.Future()
 

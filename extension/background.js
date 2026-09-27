@@ -54,10 +54,31 @@ function connect() {
       const msg = JSON.parse(ev.data);
       if (msg.type === "pong") console.log("[claude-mcp-bridge] pong received");
       if (msg.type === "echo_reply") console.log("[claude-mcp-bridge] echo_reply:", msg.text);
+      if (msg.type === "page_cmd") handlePageCmd(msg);
     } catch (e) {
       console.warn("[claude-mcp-bridge] non-JSON message:", ev.data);
     }
   };
+}
+
+// Phase 3: page_cmd 路由 -> claude.ai 标签页 content script 执行 -> page_result 回传
+async function handlePageCmd(msg) {
+  const id = msg.id;
+  try {
+    const tabs = await browser.tabs.query({ url: "https://claude.ai/*" });
+    if (!tabs.length) throw new Error("no claude.ai tab open");
+    const tab = tabs.find((t) => t.active) || tabs[0];
+    const res = await browser.tabs.sendMessage(tab.id, {
+      type: "bridge-page-cmd",
+      action: msg.action,
+      payload: msg.payload || {},
+    });
+    console.log("[claude-mcp-bridge] page_cmd result:", msg.action, res);
+    send({ type: "page_result", id, ok: !!res?.ok, data: res?.data, error: res?.error });
+  } catch (e) {
+    console.error("[claude-mcp-bridge] page_cmd routing failed:", e);
+    send({ type: "page_result", id, ok: false, error: String((e && e.message) || e) });
+  }
 }
 
 // 返回 true 表示已发出或已入队（都不丢）
