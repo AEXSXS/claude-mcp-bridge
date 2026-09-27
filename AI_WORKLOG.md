@@ -292,14 +292,32 @@
 
 **本地测试方法**：
 1. 起 Server：`python mcp_server/bridge_ws.py`（看到 listening on ws://127.0.0.1:8765）
-2. 加载扩展：about:debugging → 临时加载 `claude-mcp-bridge-0.2.0.xpi`
-3. 打开 claude.ai → background 控制台应见：`WS connected` → `sent: {"type":"ping"}` → `pong received`；服务端窗口同时打印 recv/send
-4. 断服务再启可验证扩展 3 秒自动重连
+2. 加载 `claude-mcp-bridge-0.2.0.xpi`
+3. 打开 claude.ai，看页面控制台有 injected + ping via background
+4. 在 about:debugging → 扩展 → Inspect 看 background 控制台是否有 "WS connected" 和 "pong received"
 
-**下一步打算**：
-- 等协调者验收 + 真机测试结果，再决定第三阶段（Claude 页面 DOM 发消息）
-
-**风险/疑问**：
-- Firefox event page 休眠可能导致 background 的 WS 长连接不稳定（临时加载验证阶段影响小）；若真机出现频繁断连，后续可加 keepalive 或改用 persistent background（MV3 Firefox 允许 `"persistent": true`？需查证）——留待协调者定夺
-- 跨进程设计点：MCP 工具进程与 WS 服务进程目前分离，第三阶段做「MCP 工具→WS→扩展→页面」链路时需确定合并方案（如 aiohttp 同时挂 MCP streamable-http 与 WS，或 stdio 进程内 anyio 并跑）
+**下一步打算**：等用户真机验证 WebSocket 连通性后，再推进 DOM 发消息阶段。
 ---
+
+### [2026-09-27 21:34] 【协调者诊断】
+- 针对：用户加载 v0.2.0 后控制台截图（`ping via background: { sent: false }`）
+- 决策/指示：
+  **诊断结论**：content → background 消息通路正常，但 **WebSocket 未连接成功**（`sent: false` 表示 `ws.readyState !== OPEN`）。
+
+  最可能原因：**本地 WebSocket 服务没有启动**。
+
+  请用户按以下步骤验证：
+  1. 打开终端，进入项目目录，运行：
+     ```
+     python mcp_server/bridge_ws.py
+     ```
+     确认看到类似 `listening on ws://127.0.0.1:8765` 的输出。
+  2. 保持该终端运行，然后在 Firefox：
+     - 刷新 claude.ai 页面，或重新临时加载扩展。
+  3. 查看两处日志：
+     - **页面控制台**（F12）：应看到 `ping via background: { sent: true }`
+     - **扩展 background 控制台**（about:debugging → 此 Firefox → 找到 Claude MCP Bridge → Inspect）：应看到 `WS connected` 和 `pong received`
+
+  如果 Server 已启动仍出现 `sent: false`，请把 background 控制台的完整日志贴出来，再进一步排查。
+
+- 备注：当前不需要执行者改代码，先确认 Server 是否在跑。
