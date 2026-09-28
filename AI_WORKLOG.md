@@ -979,3 +979,35 @@ Claude 回复原文开头："你好小九！收到了 👋 这条消息如果真
 **真机验证步骤（待用户）**：重启 bridge_ws.py（正式 8765/8766）→ Firefox 加载
 claude-mcp-bridge-0.6.0.xpi → 刷新 claude.ai → send_prompt 不带 wait 应秒回 prompt_id
 → wait_reply 取到回复；期间再发第二条应报 busy（单飞锁）。
+
+---
+### [2026-09-28 08:10] 【协调者代码复核：commit 69dec5e】merge 完整性✓，但发现单飞锁有真实竞态漏洞 + baseline 选择器风险，需修复后再上真机
+- 针对：commit `69dec5e`（v0.6.0 实施）+ 用户提到的 `c033cb5` 合并冲突问题
+- **merge 完整性核实（结论：完整，无丢失）**：
+  - `c033cb5`（07:15 协调者验收条目）与 `69dec5e`（07:45 执行者实施条目）在远程历史上是**线性提交**（c033cb5 在前，69dec5e 在后），不是真正的 git merge commit；执行者本地大概率经历过 rebase 冲突，但推送结果显示两条记录都完整保留、顺序正确（07:15 在前、07:45 在后）。
+  - 用 get_commit(69dec5e) 核对 `AI_WORKLOG.md` 的 diff：`+34 / -0`，patch 只在文件末尾追加新段落，**没有触碰 07:15 及更早的任何内容**。合并处完整，无需修复。
+
+- **代码复核结果（用 get_commit full_patch + get_file_contents 读了 background.js / content.js 完整现状）**：
+
+  **① 🔴单飞锁存在"检查-设置"竞态，不是原子锁**（`extension/background.js` `handlePageCmd`）：
+  当前顺序是：`await tabs.query()` → 检查 `inFlight.has(tab.id)` → `await tabs.sendMessage(...)`（这一步内部做了 fillPrompt+350ms 等待+clickSend，耗时至少 350ms+）→ **只有这一步 resolve 之后才 `inFlight.set(...)` 真正上锁**。
+  也就是说，从"检查通过"到"真正挂锁"之间有一个几百毫秒的窗口，如果第二个 send_prompt 的 page_cmd 在这个窗口内到达（v0.6.0 的设计恰恰鼓励调用方不 wait、连续发送），它一样会看到 `inFlight.has(tab.id)===false`，**两个请求会同时对同一个标签页执行 fillPrompt/clickSend**，单飞锁形同虚设。
+  test_v060.py 测不出这个问题，因为它是纯协议级测试、没有并发发两个 send_prompt。**建议修复**：把 `inFlight.set(tab.id, {id, timer:null})` 挪到"检查通过"之后、`await tabs.sendMessage` **之前**（先占位上锁），并在 `tabs.sendMessage` 失败或 `res.ok===false` 时显式 `clearInFlight` 释放，避免占位锁泄漏。
+
+  **② 🟡baseline/完成判定依赖的选择器兜底可能误判用户自己发的消息为"回复"**（`content.js` `readLastReply`）：
+  选择器链最后兜底到 `main article`——如果这一级在 claude.ai 当前 DOM 里对用户消息和 Claude 回复**不加区分**（都用 `<article>`），那么在"已发送但 Claude 还没开始渲染回复"的短暂窗口内，若前面几级选择器恰好取不到文本，会退到 `main article` 抓到的**可能是用户刚发的那条消息本身**——因为它文本非空、且必然与 `prevText`（发送前的最后一条回复）不同，稳定 3 次采样后 `waitForReply` 就会把用户自己的输入误判为"Claude 回复"提前返回。目前没有证据表明这一定会触发（取决于 claude.ai 实际 DOM 是否用 role 区分 article），但这是选择器设计上的真实漏洞，建议在 `main article` 这级兜底里加一个排除用户消息的判定（比如要求祖先节点带 assistant 相关的 data-testid/class，或者至少要求所选 selector 与上一次采样的 selector 一致，不要跨级别横跳判定"稳定"）。
+  次要现象：`payload.wait=true` 时，`watchAndReport` 和 wait 分支的 `waitForReply` 会**各自独立跑一遍轮询**（重复劳动，非致命，但建议后续合并成一次）。
+
+  **③ 🟡missed 兜底计时器依赖 background event page 存活，标签页提前关闭时会双重失效**：
+  `inFlight` 的 `setTimeout` 只存在于 background 的内存里；Firefox event page 空闲会被回收，20s keepalive 只在 claude.ai 标签页开着时有效——如果标签页在生成完成前被关闭，keepalive 停止，之后一旦 background 被回收，**missed 计时器和 inFlight 锁一起消失**，reply_event 永远不会推给 mailbox，那条 prompt 只能靠 server 端 wait_reply 自身的 timeout 兜底（返回超时错误，而不是明确的 missed 消息）。这是评审②"死者无法上报，background 兜底"设计里没覆盖到的边界（background 自己也可能死），建议记录为已知限制，暂不要求马上修复，但真机验证时如果测到"标签页关闭后 prompt 状态"要预期是"超时"而非"missed"。
+
+- 决策/指示：
+  1. **①是需要在真机验证前修的真实 bug**——目前"期间再发第二条应报 busy"这条测试即使通过也不能证明锁可靠（可能只是运气好没撞上竞态窗口）。请按上面建议把 `inFlight.set` 挪到 `sendMessage` 之前，失败路径加 `clearInFlight`，改完后**追加一个真正并发的测试**（两个 send_prompt 几乎同时发到同一 tab，断言只有一个真正执行了 fillPrompt/clickSend，另一个立即拿到 busy）到 test_v060.py 或新测试文件里，不能只靠真机手工验证。
+  2. **②本次不要求代码修复**，但请把 claude.ai 当前对话页里用户消息 vs 助手消息的外层 DOM（class / data-testid）截图或选择器贴一下，协调者据此判断 `main article` 这级兜底是否真的有风险，再决定是否需要补判定。
+  3. **③不需要现在改代码**，作为已知限制记录，后续如果真机验证发现"标签页关闭"场景表现异常，直接对照本条分析。
+  4. 修完①并补上并发测试后，再进行真机全链路验证（单飞锁 busy / missed 计时器真触发 / 真实 claude.ai）会更有意义——现在测的话，busy 分支即使"看起来通过"也不能说明锁本身是对的。
+
+- 备注：
+  - 本条写入已按五步流程执行（读最新 sha 4525f416 → 拼接完整旧内容 + 分隔符 + 新增内容 → 整文件写入 → 待用 commit stats 核对 deletions≈0）。
+  - 复核范围：`extension/background.js`、`extension/content.js` 全文 + `mcp_server/bridge_ws.py`、`mcp_server/server.py` 的 diff，未发现 server 端/bridge_ws 端逻辑问题；重点问题集中在扩展侧的时序假设上。
+---
