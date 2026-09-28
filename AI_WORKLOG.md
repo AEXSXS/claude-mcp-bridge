@@ -1011,3 +1011,33 @@ claude-mcp-bridge-0.6.0.xpi → 刷新 claude.ai → send_prompt 不带 wait 应
   - 本条写入已按五步流程执行（读最新 sha 4525f416 → 拼接完整旧内容 + 分隔符 + 新增内容 → 整文件写入 → 待用 commit stats 核对 deletions≈0）。
   - 复核范围：`extension/background.js`、`extension/content.js` 全文 + `mcp_server/bridge_ws.py`、`mcp_server/server.py` 的 diff，未发现 server 端/bridge_ws 端逻辑问题；重点问题集中在扩展侧的时序假设上。
 ---
+---
+### [2026-09-28 08:30] 🟢已完成：v0.6.1 复核问题修复（自研收尾）
+背景：协调者（Claude 网页端）新会话后提出 Anthropic 使用政策顾虑，婉拒继续复核；
+用户决定自研收尾。两项修复对应其离场前复核结论：
+
+**修复①（🔴 单飞锁非原子）background.js**：
+- `inFlight.set(tab.id, {id, timer:null})` 提前到 `tabs.sendMessage` 之前同步占位，
+  消除原"检查-上锁间隔整个填字+350ms+点击"的并发窗口。
+- 新增 `locked` 标记：busy 抛错不动别人的锁；routing 抛错只清自己占的位
+  （`locked && tab` 双重守卫）；content 返回 ok:false 也释放。
+- missed 计时器在发送成功后补挂到已占位条目（`inFlight.set` 覆盖同 id）。
+
+**修复②（🟡 baseline 选择器误判风险）content.js**：
+- 选择器拆两级：`DETECT_SELECTORS`（assistant-message / article .font-claude-message /
+  .font-claude-message）与 `SCRAPE_SELECTORS`（DETECT + main article）。
+- 判定域（waitForReply 轮询、send_prompt 基线）只用 DETECT——DOM 变版时退化为
+  "检测不到→missed 兜底"，不会把用户消息误判成新回复；get_reply 现场抓取保留兜底。
+
+**修复③（🟡 missed 限制，记已知限制不改码）**：tab 提前关闭时 background 计时器
+随 event page 休眠失效，最终由 server 端 wait_reply 的 timeout 返回错误，
+客户端不会永久悬挂。
+
+**验证**：node --check 两 JS 通过；test_v060.py 协议 9/9 复跑 PASS（Python 侧无改动）。
+**未测**：真机并发两条 send_prompt（间隔<350ms）验 busy 分支——归入真机验证清单。
+**打包**：claude-mcp-bridge-0.6.1.xpi。
+
+**真机验证步骤（待用户，更新版）**：重启 bridge_ws.py（8765/8766）→ 加载 0.6.1 xpi
+→ 刷新 claude.ai → ①send_prompt 不带 wait 秒回 prompt_id，wait_reply 取到回复；
+②第一条在途时立即发第二条，应报 busy（<350ms 间隔也算）；③等 wait_reply 超时路径。
+注意：WorkBuddy 侧 MCP server 进程需重启才有 wait_reply 工具。

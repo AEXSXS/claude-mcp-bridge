@@ -102,14 +102,18 @@ function clickSend() {
   return { clicked: true };
 }
 
-// 抓最后一条 Claude 回复。选择器按优先级尝试，DOM 变版时兜底 article
-function readLastReply() {
-  const sels = [
-    '[data-testid="assistant-message"]',
-    "article .font-claude-message",
-    ".font-claude-message",
-    "main article",
-  ];
+// 抓最后一条 Claude 回复。检测/抓取两级选择器：
+// DETECT（判完成用）只认明确的助手消息特征，砍掉 main article 兜底——
+// fail-safe：DOM 变版时退化为"检测不到→missed 兜底"，而非把用户消息误判成回复。
+// SCRAPE（get_reply 现场抓取用，不参与判定）保留兜底，尽量拿到文本。
+const DETECT_SELECTORS = [
+  '[data-testid="assistant-message"]',
+  "article .font-claude-message",
+  ".font-claude-message",
+];
+const SCRAPE_SELECTORS = [...DETECT_SELECTORS, "main article"];
+
+function readLastReply(sels = SCRAPE_SELECTORS) {
   for (const sel of sels) {
     const nodes = document.querySelectorAll(sel);
     if (nodes.length) {
@@ -142,7 +146,7 @@ async function waitForReply(prevText, timeoutMs = 150000) {
     await new Promise((r) => setTimeout(r, 1200));
     let cur = "";
     try {
-      cur = readLastReply()?.text || "";
+      cur = readLastReply(DETECT_SELECTORS)?.text || "";
     } catch (_) {
       cur = "";
     }
@@ -195,7 +199,7 @@ async function handlePageAction(action, payload, promptId) {
     } else if (action === "click_send") {
       data = clickSend();
     } else if (action === "send_prompt") {
-      const prevText = readLastReply()?.text || ""; // 基线：发送前的最后一条回复
+      const prevText = readLastReply(DETECT_SELECTORS)?.text || ""; // 基线（与 watcher 同判定域）
       data = fillPrompt(String(payload.text || ""));
       await new Promise((r) => setTimeout(r, 350)); // 等 React 状态刷新启用发送钮
       data.send = clickSend(); // 失败会抛错 -> 不挂 watcher（发送失败不该有回复可等）

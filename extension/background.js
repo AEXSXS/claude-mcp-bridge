@@ -76,13 +76,20 @@ function clearInFlight(tabId, id) {
 // Phase 3: page_cmd 路由 -> claude.ai 标签页 content script 执行 -> page_result 回传
 async function handlePageCmd(msg) {
   const id = msg.id;
+  let tab = null;
+  let locked = false; // 本次调用是否已占位（只清理自己的锁，不动别人的）
   try {
     const tabs = await browser.tabs.query({ url: "https://claude.ai/*" });
     if (!tabs.length) throw new Error("no claude.ai tab open");
-    const tab = tabs.find((t) => t.active) || tabs[0];
-    if (msg.action === "send_prompt" && inFlight.has(tab.id)) {
-      const busyId = inFlight.get(tab.id).id;
-      throw new Error(`busy: prompt ${busyId} still in flight on this tab (single-flight lock)`);
+    tab = tabs.find((t) => t.active) || tabs[0];
+    if (msg.action === "send_prompt") {
+      if (inFlight.has(tab.id)) {
+        const busyId = inFlight.get(tab.id).id;
+        throw new Error(`busy: prompt ${busyId} still in flight on this tab (single-flight lock)`);
+      }
+      // 同步占位：消除"检查-上锁"之间隔整个 sendMessage（350ms+）的并发窗口
+      inFlight.set(tab.id, { id, timer: null });
+      locked = true;
     }
     const res = await browser.tabs.sendMessage(tab.id, {
       type: "bridge-page-cmd",
@@ -91,23 +98,28 @@ async function handlePageCmd(msg) {
       payload: msg.payload || {},
     });
     console.log("[claude-mcp-bridge] page_cmd result:", msg.action, res);
-    if (msg.action === "send_prompt" && res?.ok) {
-      // missed 兜底：content 死掉无法自报，background 独立计时，超时主动报 missed
-      const timeoutMs = Number(msg.payload?.timeout_ms) || 150000;
-      const timer = setTimeout(() => {
-        const cur = inFlight.get(tab.id);
-        if (cur && cur.id === id) {
-          inFlight.delete(tab.id);
-          send({
-            type: "reply_event", id, ok: false,
-            error: `missed: no reply detected within ${timeoutMs}ms (tab closed or watcher died)`,
-          });
-        }
-      }, timeoutMs + 30000);
-      inFlight.set(tab.id, { id, timer });
+    if (msg.action === "send_prompt") {
+      if (res?.ok) {
+        // missed 兜底：content 死掉无法自报，background 独立计时，超时主动报 missed
+        const timeoutMs = Number(msg.payload?.timeout_ms) || 150000;
+        const timer = setTimeout(() => {
+          const cur = inFlight.get(tab.id);
+          if (cur && cur.id === id) {
+            inFlight.delete(tab.id);
+            send({
+              type: "reply_event", id, ok: false,
+              error: `missed: no reply detected within ${timeoutMs}ms (tab closed or watcher died)`,
+            });
+          }
+        }, timeoutMs + 30000);
+        inFlight.set(tab.id, { id, timer }); // 补挂计时器到已占位条目
+      } else {
+        clearInFlight(tab.id, id); // content 执行失败（如点击被拒），释放锁
+      }
     }
     send({ type: "page_result", id, ok: !!res?.ok, data: res?.data, error: res?.error });
   } catch (e) {
+    if (locked && tab) clearInFlight(tab.id, id);
     console.error("[claude-mcp-bridge] page_cmd routing failed:", e);
     send({ type: "page_result", id, ok: false, error: String((e && e.message) || e) });
   }
